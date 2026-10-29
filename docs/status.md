@@ -594,8 +594,8 @@ User reviews the checkpoint and, if accepted, stages and commits the IMP-004 fil
 ## TASK_ID: IMP-005
 
 - Source: `docs/bootstrap.md`, section 5.3, “IMP-005 — hub visits и Gold facts”; `docs/spec.md`, DEC-011–DEC-015, DEC-021, DEC-022, DEC-026 and AC-005–AC-008, AC-011
-- Status: REVIEW_READY
-- Updated: 2026-10-29T17:07:46+03:00
+- Status: DONE
+- Updated: 2026-10-29T17:29:17+03:00
 - Baseline HEAD: ab4cbf0c8c744fb57b6585f134c1c672808e2101
 
 ### Progress
@@ -682,4 +682,40 @@ User reviews the checkpoint and, if accepted, stages and commits the IMP-004 fil
 - Details: the first fresh reviewer returned `VERDICT: BLOCK` for B04. After targeted fix iteration 1, the second fresh reviewer confirmed the corrected code, tests, evidence, scope, and status preservation with `VERDICT: OK`. After the required status-only B07 correction, the third fresh targeted reviewer verified the complete diff and corrected status section, found no BLOCKER, DEFERRED, or IMPROVEMENT, and returned `VERDICT: OK`.
 
 ### Next action
-User reviews the checkpoint and, if accepted, stages and commits the six IMP-005 paths; no push or transition to another task is authorized.
+IMP-005 is complete and committed as `345be2c`; await separate authorization for push or transition to IMP-006.
+
+## TASK_ID: IMP-006
+
+- Source: `docs/bootstrap.md`, section 5.3, “IMP-006 — Gold aggregates и reconciliation”; `docs/spec.md`, DEC-013, DEC-026, AC-010 and AC-011
+- Status: BLOCKED
+- Updated: 2026-10-29T17:30:38+03:00
+- Baseline HEAD: 345be2c0dca8cbc8e4505241f84bf882b13a7ebd
+
+### Progress
+- Implemented: none; implementation did not start because PRECHECK found pre-existing working-tree changes not attributable to this task.
+- Remaining: implement route-version and completed hub-dwell aggregates, cross-layer reconciliation, required tests, runtime evidence, and independent review.
+
+### AC evidence
+| AC / ссылка на источник | Result | Проверка / evidence / причина |
+|---|---|---|
+| `docs/spec.md` AC-010; `docs/bootstrap.md` §5.3 IMP-006 | NOT_RUN | PRECHECK stopped before implementation and checks because the working tree already contained unrelated changes. |
+| `docs/spec.md` AC-011; `docs/bootstrap.md` §5.3 IMP-006 | NOT_RUN | PRECHECK stopped before implementation and checks because the working tree already contained unrelated changes. |
+
+### Issues
+#### IMP-006/B01
+- State: OPEN
+- Category: ENVIRONMENT
+- Affects: mandatory PRECHECK and safe diff-attribution gate
+- Problem: the starting working tree is not clean and contains changes that predate IMP-006, so this run cannot safely attribute or isolate the task diff without user action or explicit authorization.
+- Evidence: at baseline HEAD `345be2c0dca8cbc8e4505241f84bf882b13a7ebd`, `git status --short --untracked-files=all` reported modified `docs/status.md` and untracked `dbt/scripts/__pycache__/load_fixtures.cpython-312.pyc`; the pre-existing status diff changes IMP-005 from `REVIEW_READY` to `DONE` and updates its next action.
+- Unblock: user commits/removes the pre-existing paths, or explicitly authorizes a safe isolation strategy that preserves them; then rerun IMP-006 from a distinguishable baseline.
+- Resolution: pending
+
+### Review
+- Verdict: NOT_RUN
+- Calls: 0
+- Fix iterations: 0
+- Details: independent review was not reached because PRECHECK blocked implementation.
+
+### Next action
+User resolves or explicitly authorizes safe isolation of the pre-existing `docs/status.md` and `dbt/scripts/__pycache__/load_fixtures.cpython-312.pyc` changes, then reruns IMP-006.
