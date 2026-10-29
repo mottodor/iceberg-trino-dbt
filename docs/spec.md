@@ -1,10 +1,11 @@
 # Спецификация: Lakehouse modeling — Iceberg, Trino и dbt
 
-**Статус:** APPROVED  
-**Используемый skill:** Specify (версия в переданном тексте не указана)  
-**Исходный материал:** [`docs/idea.md`](./idea.md) — задаёт назначение учебного проекта, приобретаемые компетенции и верхнеуровневые границы scope.  
-**Роль этого документа:** одобренная проверяемая спецификация; исходник не изменяется.  
-**Одобрение:** пользователь явно перевёл текущую версию в статус `APPROVED`.
+**Статус:** APPROVED — core vertical slice и schema evolution slice явно одобрены пользователем.
+**Используемый skill:** Specify 0.2.0
+**Исходный материал:** [`docs/idea.md`](./idea.md) — задаёт назначение учебного проекта, приобретаемые компетенции и верхнеуровневые границы scope.
+**Основание изменения:** пользователь определил schema evolution следующим срезом, подтвердил завершение core vertical slice и запретил менять его контракты.
+**Роль этого документа:** единая проверяемая спецификация; исходник `docs/idea.md` не изменяется.
+**Одобрение:** core-часть документа была одобрена ранее; пользователь явно одобрил добавленные DEC-028–DEC-033, AC-013–AC-020 и раздел 8 без изменений.
 
 ## 1. Цель и ожидаемый результат
 
@@ -34,7 +35,7 @@
 
 ### Состояние готовности
 
-Основные контракты, deterministic fixture package и проверяемые результаты первого среза согласованы. Решения для последующих срезов, не влияющие на контракты core vertical slice, явно отложены. Реальное выполнение стека и тестов на этапе Specify не проводилось.
+Основные контракты, deterministic fixture package и проверяемые результаты первого среза согласованы, реализованы и подтверждены acceptance evidence проекта. Контракты core vertical slice заморожены и не изменяются новым срезом. Schema evolution детализирован как следующий изолированный учебный срез; его DDL и проверки на этапе Specify не выполнялись.
 
 ## 2. Распределение работы и границы делегирования
 
@@ -109,6 +110,12 @@
 | DEC-025 | Принято пользователем | Deterministic fixture package `P1`–`P4`, отрицательные DQ-сценарии и критерии AC-003–AC-009 входят в первый срез. | Явное подтверждение пользователя |
 | DEC-026 | Принято агентом в делегированной области | Gold первого среза содержит accumulating package fact, hub-visit fact и агрегат эффективности по версии маршрута; дополнительные витрины не обязательны. | Делегирование DEC-019; следует из согласованных аналитических результатов |
 | DEC-027 | Принято агентом в делегированной области | Конкретные совместимые версии компонентов фиксируются перед реализацией; используются документированные Trino Iceberg REST catalog и Polaris OAuth2/warehouse interfaces. Версии не являются бизнес-требованием. | Делегирование DEC-019; официальная документация Trino и Apache Polaris |
+| DEC-028 | Решено пользователем | Следующий срез проекта — schema evolution. Core vertical slice завершён; его контракты и ожидаемые результаты изменять нельзя. Детализируются только учебные цели, изменения схемы, порядок запусков, совместимость snapshots, запросы, негативные сценарии, критерии и границы этого среза. | Текущее поручение пользователя |
+| DEC-029 | Принято пользователем | Schema evolution выполняется на отдельной учебной Iceberg-таблице `schema_evolution_package_delivery`, создаваемой из утверждённого Gold baseline. Bronze/Silver/Gold-модели core slice и их таблицы не изменяются. | DEC-019, DEC-028; явное одобрение schema evolution slice |
+| DEC-030 | Принято пользователем | Обязательная последовательность эволюции: переименование `delivery_status` в `current_status`, расширение типа `completed_visit_count` с `INTEGER` до `BIGINT`, затем добавление nullable-колонки `delivery_priority VARCHAR` после `route_version_id`. | Явное одобрение schema evolution slice; документированные операции Trino 484 Iceberg connector |
+| DEC-031 | Принято пользователем | Исходный data snapshot обозначается `S0`; DDL schema evolution должен изменить metadata/schema ID без создания нового data snapshot и без переписывания Parquet-файлов. Первый успешный `INSERT` по новой схеме создаёт дочерний snapshot `S1`. Snapshot IDs генерируются средой и фиксируются во время запуска, а не задаются в fixtures. | Явное одобрение schema evolution slice; Iceberg schema evolution semantics |
+| DEC-032 | Принято пользователем | После эволюции добавляется только в учебную таблицу строка `EVO-P5`: `R1-V2`, `delivery_priority='express'`, `current_status='delivered'`, `completed_visit_count=1`, `delivery_duration_hours=24`, `is_on_time=true`. Она не становится частью core fixtures или Gold-агрегатов. | Явное одобрение schema evolution slice |
+| DEC-033 | Принято пользователем | Обязательные негативные сценарии: попытка сузить `completed_visit_count` обратно до `INTEGER` и попытка записи через старое имя `delivery_status`. Обе операции должны завершиться ошибкой атомарно, не меняя schema, rows, data files или текущий snapshot. | Явное одобрение schema evolution slice; документированные ограничения widening-only |
 
 ## 5. Существенные контракты поведения и данных
 
@@ -208,11 +215,12 @@
 - События с разными `event_id` считаются разными событиями; невозможная последовательность выявляется DQ-тестами. Более сложная semantic deduplication не входит в первый срез.
 - Gold первого среза ограничен accumulating package fact, hub-visit fact и агрегатом эффективности по версии маршрута.
 - Поздно обнаруженная ретроактивная корректировка плана маршрута не входит в первый срез и должна быть определена перед соответствующим расширением.
-- Точные сценарии schema evolution, time travel, partitioning benchmark и maintenance определяются перед последующими срезами; они не отменены.
+- Точный сценарий schema evolution определён и одобрен в разделе 8.
+- Отдельный time travel slice, partitioning benchmark и maintenance по-прежнему отложены и не отменены.
 
 ## 6. Критерии приёмки
 
-AC-001 и AC-002 следуют из исходника. AC-003–AC-012 являются обязательными критериями первого среза.
+AC-001 и AC-002 следуют из исходника. AC-003–AC-012 являются одобренными и завершёнными критериями core vertical slice. AC-013–AC-020 одобрены для schema evolution slice и не изменяют предыдущие критерии.
 
 ### AC-001 — соблюдение границ проекта
 
@@ -310,6 +318,70 @@ AC-001 и AC-002 следуют из исходника. AC-003–AC-012 явл�
 - **Способ проверки:** catalog listing, запросы Trino, проверка object-storage paths и успешный `dbt build`; это план проверки, а не уже выполненный результат.
 - **Основание:** `docs/idea.md`, DEC-005, DEC-018, DEC-027.
 
+### AC-013 — неизменность завершённого core slice
+
+- **Исходные условия:** полный baseline core slice проходит AC-003–AC-012; schema evolution запускается в отдельном run prefix.
+- **Действие:** выполнить core regression до и после schema evolution exercise и сравнить схемы и результаты core Bronze/Silver/Gold-таблиц.
+- **Ожидаемый результат:** все ранее утверждённые модели, колонки, строки, агрегаты и DQ-контракты сохраняются; в core fixtures не появляется `EVO-P5`; изменения ограничены учебной evolution-таблицей и артефактами её проверки.
+- **Способ проверки:** два успешных core regression запуска, сравнение утверждённых expected rows и `information_schema.columns` для core-таблиц.
+- **Основание:** DEC-028, утверждённые AC-003–AC-012.
+
+### AC-014 — исходная evolution-таблица и snapshot S0
+
+- **Вход:** утверждённые строки `P1`–`P4` из `gold_package_delivery_fact` после полного baseline build.
+- **Действие:** создать изолированную Iceberg-таблицу `schema_evolution_package_delivery` с начальной схемой из раздела 8 и зафиксировать её текущий snapshot как `S0`.
+- **Ожидаемый результат:** таблица содержит ровно четыре строки; `P1/P2/P3/P4` сохраняют core status, route version, completed visit count, delivery duration и on-time result; `$snapshots` содержит один data snapshot `S0`.
+- **Способ проверки:** `DESCRIBE`, детерминированный запрос по `package_id`, чтение `"schema_evolution_package_delivery$snapshots"`.
+- **Основание:** DEC-029, раздел 8.
+
+### AC-015 — metadata-only schema evolution
+
+- **Исходные условия:** таблица находится в состоянии `S0`; зафиксированы snapshot ID и набор Parquet data-file paths.
+- **Действие:** последовательно переименовать колонку, расширить числовой тип и добавить nullable-колонку согласно DEC-030.
+- **Ожидаемый результат:** текущая схема получает новые имена, порядок и типы; current snapshot остаётся `S0`; число data snapshots не увеличивается; набор Parquet data files и их содержимое не меняются. Field ID переименованной колонки и widened-колонки сохраняется, а новая колонка получает новый field ID. Допускаются новые Iceberg metadata JSON/metadata-log объекты.
+- **Способ проверки:** `DESCRIBE`, `$snapshots`, сравнение data-file paths/size/checksum и object-storage listing, а также сравнение `current-schema-id` и field IDs в Iceberg metadata JSON до/после DDL.
+- **Основание:** DEC-030, DEC-031; Apache Iceberg schema evolution metadata semantics.
+
+### AC-016 — чтение старых data files через новую схему
+
+- **Исходные условия:** DDL из AC-015 выполнен, но новая строка ещё не записана.
+- **Действие:** прочитать текущую таблицу явной проекцией `package_id, route_version_id, delivery_priority, current_status, completed_visit_count, delivery_duration_hours, is_on_time`.
+- **Ожидаемый результат:** возвращаются те же четыре `P1`–`P4`; значения переименованной колонки сохранены; `completed_visit_count` читается как `BIGINT`; `delivery_priority` равно `NULL` для каждой старой строки; ни одна старая колонка не подставляется в новое поле по позиции.
+- **Способ проверки:** expected-row comparison и проверка типов через `DESCRIBE`/`information_schema.columns`.
+- **Основание:** DEC-030; Iceberg field-ID correctness guarantees.
+
+### AC-017 — writer compatibility и создание snapshot S1
+
+- **Исходные условия:** действует новая схема, current snapshot всё ещё `S0`.
+- **Действие:** сначала попытаться выполнить `INSERT` с явным списком колонок, содержащим старое имя `delivery_status`; затем выполнить корректный `INSERT` строки `EVO-P5` с актуальными именами и типами.
+- **Ожидаемый результат:** запись со старым именем завершается ошибкой и не создаёт snapshot; корректная запись добавляет ровно одну строку и создаёт новый snapshot `S1`, для которого `parent_id = S0`.
+- **Способ проверки:** exit status и диагностическое имя отсутствующей колонки для негативной записи; затем `$snapshots`, count и exact-row query для `EVO-P5`.
+- **Основание:** DEC-031–DEC-033.
+
+### AC-018 — совместимость S0 и S1
+
+- **Исходные условия:** доступны snapshot IDs `S0` и `S1`; snapshot expiration не выполнялся.
+- **Действие:** выполнить одинаковую явную проекцию текущей схемы через `FOR VERSION AS OF S0`, `FOR VERSION AS OF S1` и без time-travel clause.
+- **Ожидаемый результат:** `S0` возвращает только `P1`–`P4`, сохраняя статусы и counts, а `delivery_priority` для них равен `NULL`; `S1` и текущая таблица возвращают те же четыре строки плюс `EVO-P5` с `delivery_priority='express'`; результаты `S1` и current совпадают. Запросы не используют `SELECT *`, чтобы совместимость проверялась по явному контракту колонок.
+- **Способ проверки:** три отсортированных result set и их exact comparison; snapshot IDs берутся из `$snapshots`, а не хардкодятся.
+- **Основание:** DEC-030–DEC-032; Trino Iceberg `FOR VERSION AS OF`.
+
+### AC-019 — запрет сужения типа и атомарность ошибки
+
+- **Исходные условия:** текущая схема содержит `completed_visit_count BIGINT`, current snapshot равен `S1`.
+- **Действие:** попытаться выполнить `ALTER COLUMN completed_visit_count SET DATA TYPE INTEGER`.
+- **Ожидаемый результат:** Trino отклоняет narrowing conversion; схема остаётся `BIGINT`; current snapshot остаётся `S1`; число строк и data-file paths не меняются.
+- **Способ проверки:** ожидаемый non-zero exit status, повторный `DESCRIBE`, `$snapshots`, count и file-path comparison.
+- **Основание:** DEC-030, DEC-033; Trino Iceberg widening-only type evolution.
+
+### AC-020 — сквозное доказательство schema evolution slice
+
+- **Исходные условия:** core baseline и evolution exercise выполняются в чистом изолированном run prefix.
+- **Действие:** выполнить порядок из раздела 8, сохранить результаты запросов, schema/snapshot metadata и object-storage evidence, затем повторить core regression.
+- **Ожидаемый результат:** AC-013–AC-019 проходят; Polaris продолжает регистрировать одну evolution-таблицу; object storage содержит data и metadata Iceberg-объекты; негативные операции не оставляют частичных изменений; task-owned schema и объекты удаляются без snapshot expiration или compaction.
+- **Способ проверки:** автоматизированный acceptance workflow с именованными проверками, evidence manifest и безопасным cleanup; это план проверки, а не уже выполненный результат.
+- **Основание:** `docs/idea.md`, DEC-028–DEC-033.
+
 ## 7. Первый законченный срез
 
 ### Решено пользователем: core vertical slice
@@ -324,24 +396,226 @@ AC-001 и AC-002 следуют из исходника. AC-003–AC-012 явл�
 - Gold-результаты по SLA доставки, времени в хабах и отклонению фактического маршрута;
 - dbt tests и reconciliation для ключевых контрактов данных.
 
-В последующие срезы отложены, но остаются обязательной частью полного scope:
+Core vertical slice завершён. Его контракты, fixtures и критерии AC-003–AC-012 остаются утверждённой неизменной базой.
 
-- schema evolution;
+В последующие срезы после schema evolution отложены, но остаются обязательной частью полного scope:
+
 - отдельное упражнение time travel;
 - partitioning benchmark и анализ `EXPLAIN`/file pruning;
 - small-files diagnostics;
 - snapshot expiration и compaction.
 
-## 8. Допущения и неизвестные
+## 8. Следующий законченный срез: schema evolution
+
+### 8.1. Статус и учебные цели
+
+Раздел одобрен пользователем как контракт следующего среза. Он не изменяет утверждённую core-часть.
+
+После завершения среза обучающийся должен уметь:
+
+- объяснить, почему Iceberg связывает колонки по field ID, а не по физической позиции;
+- различать изменение table metadata/schema ID и создание нового data snapshot;
+- выполнить через Trino безопасные `RENAME COLUMN`, widening type update и `ADD COLUMN`;
+- показать, что schema evolution не требует переписывания существующих Parquet-файлов;
+- объяснить reader compatibility: старые data files читаются через новую схему, а новая nullable-колонка даёт `NULL` для старых строк;
+- объяснить writer compatibility: после rename запись должна использовать актуальное имя, а narrowing type change отклоняется;
+- сопоставить schema, snapshots, data files и metadata files по фактическим запросам и object-storage evidence.
+
+### 8.2. Границы и изоляция
+
+В срез входит одна отдельная Iceberg-таблица в task-owned schema:
+
+`<catalog>.<run_prefix>_evolution.schema_evolution_package_delivery`.
+
+Она создаётся из Gold baseline только как учебная копия. Не изменяются:
+
+- исходные CSV fixtures и loader core slice;
+- Bronze/Silver/Gold SQL-модели и их schema contracts;
+- значения `P1`–`P4` в core-таблицах и агрегатах;
+- SCD2, late-event, deduplication, hub-pairing и distance rules;
+- критерии AC-003–AC-012.
+
+### 8.3. Начальная схема и состояние S0
+
+Начальная таблица создаётся явной проекцией из `gold_package_delivery_fact` после полного baseline build:
+
+| Позиция | Колонка | Тип S0 | Источник |
+|---:|---|---|---|
+| 1 | `package_id` | `VARCHAR` | core Gold |
+| 2 | `route_version_id` | `VARCHAR` | core Gold |
+| 3 | `delivery_status` | `VARCHAR` | `current_status`, намеренно legacy-имя для упражнения rename |
+| 4 | `completed_visit_count` | `INTEGER` | core Gold с явным `CAST`; значения baseline обязаны помещаться в `INTEGER` |
+| 5 | `delivery_duration_hours` | `DOUBLE` | core Gold |
+| 6 | `is_on_time` | `BOOLEAN` | core Gold |
+
+Ожидаемые строки `S0`:
+
+| package_id | route_version_id | delivery_status | completed_visit_count | delivery_duration_hours | is_on_time |
+|---|---|---|---:|---:|---|
+| `P1` | `R1-V1` | `delivered` | 1 | 48 | true |
+| `P2` | `R1-V2` | `delivered` | 3 | 48 | false |
+| `P3` | `R1-V2` | `delivered` | 2 | 36 | true |
+| `P4` | `R1-V2` | `arrived_at_hub` | 0 | `NULL` | `NULL` |
+
+После создания фиксируются:
+
+- snapshot ID `S0` из `"schema_evolution_package_delivery$snapshots"`;
+- schema через `DESCRIBE`;
+- `current-schema-id` и field IDs из актуального Iceberg metadata JSON;
+- отсортированный result set;
+- набор Parquet data-file paths, размеров/checksums и object-storage listing.
+
+`S0` — символическое имя в спецификации. Конкретный 64-bit snapshot ID определяется запуском.
+
+### 8.4. Изменения схемы
+
+Операции выполняются строго последовательно:
+
+```sql
+ALTER TABLE <evolution_table>
+RENAME COLUMN delivery_status TO current_status;
+
+ALTER TABLE <evolution_table>
+ALTER COLUMN completed_visit_count SET DATA TYPE BIGINT;
+
+ALTER TABLE <evolution_table>
+ADD COLUMN delivery_priority VARCHAR AFTER route_version_id;
+```
+
+Ожидаемая текущая схема после DDL:
+
+| Позиция | Колонка | Тип | Совместимость |
+|---:|---|---|---|
+| 1 | `package_id` | `VARCHAR` | без изменения |
+| 2 | `route_version_id` | `VARCHAR` | без изменения |
+| 3 | `delivery_priority` | `VARCHAR` | новая nullable-колонка; старые строки читаются как `NULL` |
+| 4 | `current_status` | `VARCHAR` | то же field ID и те же значения, что у `delivery_status` |
+| 5 | `completed_visit_count` | `BIGINT` | widening из `INTEGER`; значения не меняются |
+| 6 | `delivery_duration_hours` | `DOUBLE` | без изменения |
+| 7 | `is_on_time` | `BOOLEAN` | без изменения |
+
+После каждого DDL проверяется, что current snapshot по-прежнему равен `S0`, а Parquet data-file paths, sizes и checksums не изменились. В metadata JSON `delivery_status → current_status` сохраняет field ID, `completed_visit_count` сохраняет field ID при смене типа, а `delivery_priority` получает новый ранее не использованный field ID. `current-schema-id` должен измениться относительно S0. Новые Iceberg metadata files допустимы и ожидаемы; новые data snapshots и Parquet files до записи `EVO-P5` недопустимы.
+
+### 8.5. Порядок запусков
+
+1. Запустить полный утверждённый core baseline и сохранить core regression evidence.
+2. Создать чистую task-owned evolution schema и таблицу S0 из Gold baseline.
+3. Сохранить `DESCRIBE`, строки S0, `$snapshots` и data-file/object listing.
+4. Выполнить три DDL из раздела 8.4 по одному, после каждого проверяя schema и отсутствие нового snapshot/data-file rewrite.
+5. Выполнить чтение `P1`–`P4` через новую схему и подтвердить `delivery_priority IS NULL`.
+6. Запустить негативный `INSERT` со старым именем `delivery_status`; подтвердить ошибку и неизменность `S0`.
+7. Запустить негативное сужение `BIGINT → INTEGER`; подтвердить ошибку и неизменность schema/snapshot/files.
+8. Выполнить корректный `INSERT` строки `EVO-P5` по новой схеме и зафиксировать новый snapshot как `S1`.
+9. Выполнить historical/current queries для `S0`, `S1` и current table.
+10. Повторно запустить core regression, собрать evidence и удалить только task-owned evolution schema/objects.
+
+### 8.6. Новая строка и состояние S1
+
+Корректная запись выполняется с явным списком актуальных колонок:
+
+| package_id | route_version_id | delivery_priority | current_status | completed_visit_count | delivery_duration_hours | is_on_time |
+|---|---|---|---|---:|---:|---|
+| `EVO-P5` | `R1-V2` | `express` | `delivered` | 1 | 24 | true |
+
+`EVO-P5` существует только в evolution-таблице. После вставки:
+
+- создаётся ровно один новый data snapshot `S1`;
+- `S1 != S0` и `S1.parent_id = S0`;
+- current table содержит пять строк;
+- четыре старые строки имеют `delivery_priority=NULL`;
+- `EVO-P5` имеет `delivery_priority='express'`;
+- core Gold по-прежнему содержит только `P1`–`P4`.
+
+### 8.7. Ожидаемые запросы
+
+Идентификатор таблицы и snapshot IDs подставляются acceptance workflow. Обязательные запросы используют явные колонки.
+
+```sql
+DESCRIBE <evolution_table>;
+```
+
+Ожидание: семь колонок в порядке и типах из раздела 8.4; `delivery_status` отсутствует.
+
+```sql
+SELECT
+    package_id,
+    route_version_id,
+    delivery_priority,
+    current_status,
+    completed_visit_count,
+    delivery_duration_hours,
+    is_on_time
+FROM <evolution_table>
+FOR VERSION AS OF <S0>
+ORDER BY package_id;
+```
+
+Ожидание: только `P1`–`P4`; новое поле равно `NULL`; переименованное поле и widened count сохраняют значения S0.
+
+```sql
+SELECT
+    package_id,
+    route_version_id,
+    delivery_priority,
+    current_status,
+    completed_visit_count,
+    delivery_duration_hours,
+    is_on_time
+FROM <evolution_table>
+FOR VERSION AS OF <S1>
+ORDER BY package_id;
+```
+
+Ожидание: `P1`–`P4` плюс `EVO-P5`; результат совпадает с тем же запросом без `FOR VERSION AS OF`.
+
+```sql
+SELECT committed_at, snapshot_id, parent_id, operation
+FROM <catalog>.<run_prefix>_evolution."schema_evolution_package_delivery$snapshots"
+ORDER BY committed_at, snapshot_id;
+```
+
+Ожидание: два data snapshots, `S0` и его прямой потомок `S1`; schema-only DDL и неуспешные операции не добавляют snapshot rows.
+
+### 8.8. Негативные сценарии
+
+Каждый сценарий запускается отдельно с фиксацией состояния до и после. Ошибка считается ожидаемой только при non-zero status и сохранении schema/data invariants.
+
+1. **Старое имя колонки после rename**
+   - действие: `INSERT` с явной колонкой `delivery_status`;
+   - ожидание: column-resolution error; строка не добавлена; snapshot не создан; имя не действует как alias.
+2. **Narrowing type evolution**
+   - действие: `ALTER COLUMN completed_visit_count SET DATA TYPE INTEGER` после успешного widening;
+   - ожидание: unsupported type change; колонка остаётся `BIGINT`; snapshot, rows и files не меняются.
+3. **Защита core boundary**
+   - действие: сравнить core schemas и baseline outputs после упражнения;
+   - ожидание: любое изменение core contract считается провалом среза, даже если evolution-таблица сама прошла проверки.
+
+Точный текст сообщений Trino не является контрактом; проверяются класс операции, non-zero status и отсутствие частичных изменений.
+
+### 8.9. Что исключено из этого среза
+
+- изменение схем Bronze/Silver/Gold или raw fixture tables;
+- добавление `delivery_priority` в core analytics;
+- `DROP COLUMN`, nested-field evolution и произвольная перестановка существующих полей;
+- изменение partition spec — это partitioning slice;
+- полноценное исследование timestamp-based time travel, branches, tags и rollback — это отдельный time travel slice;
+- snapshot expiration, orphan-file cleanup, compaction и small-files remediation;
+- проверка совместимости несколькими query engines;
+- performance benchmark и изменение incremental strategy dbt-моделей.
+
+Использование `FOR VERSION AS OF` здесь ограничено доказательством совместимости до/после schema evolution и не заменяет отдельный time travel slice.
+
+## 9. Допущения и неизвестные
 
 | ID | Статус | Решение / остаток | Влияние и момент закрытия |
 |---|---|---|---|
 | OPEN-001–OPEN-003 | Решены | Домен, аналитический результат, первый срез и распределение реализации согласованы. | Не блокируют. |
-| OPEN-004 | Делегирован | Компонентные версии и конкретный S3-compatible storage выбирает агент и закрепляет перед реализацией. | До первого запуска AC-012; не меняет бизнес-контракт. |
-| OPEN-005 | Частично отложен | Правила первого среза для дублей, late events и SCD2 согласованы. Schema evolution и ретроактивные исправления плана относятся к последующим срезам. | Закрыть перед соответствующими срезами. |
+| OPEN-004 | Решён core implementation | Pinned component versions и RustFS как S3-compatible storage закреплены и подтверждены core acceptance workflow. | Не блокирует schema evolution; новый срез использует тот же stack. |
+| OPEN-005 | Частично решён | Правила первого среза для дублей, late events и SCD2 согласованы. Schema evolution одобрен в разделе 8; ретроактивные исправления плана остаются отложенными. | Schema evolution не блокируется; route correction закрывается перед отдельным расширением. |
 | OPEN-006–OPEN-018 | Решены | Grain, события, метрики, маршруты, Gold, pairing и SLA согласованы. | Не блокируют. |
 | OPEN-019 | Решён | Fixture package `P1`–`P4`, DQ-сценарии, допуски и AC-003–AC-009 приняты пользователем. | Не блокирует. |
-| OPEN-020 | Требует проверки при реализации | Документированная интеграция Trino–Polaris и geospatial functions не запускалась в этом skill. | Проверяется AC-012; это не заявленный успешный эксперимент. |
+| OPEN-020 | Решён core implementation | Интеграция Trino–Polaris и geospatial functions подтверждена завершённым core acceptance workflow. | Не блокирует schema evolution. |
+| OPEN-021 | Требует проверки при реализации, не блокирует одобрение | Комбинация Trino 484 `FOR VERSION AS OF` с текущей схемой после rename/add/widen документарно опирается на Iceberg field IDs и поддержку time travel, но именно этот сценарий в Specify не запускался. | Проверяется AC-018; при несовпадении наблюдаемого поведения затронутый контракт возвращается в DRAFT, а не исправляется молча. |
 
 Проверена текущая документация:
 
@@ -349,9 +623,15 @@ AC-001 и AC-002 следуют из исходника. AC-003–AC-012 явл�
 - Trino Iceberg REST catalog: документированы `iceberg.catalog.type=rest`, `iceberg.rest-catalog.uri` и REST/OAuth2 properties. Источник: `https://trino.io/docs/current/object-storage/metastores.html`, Context7 `/websites/trino_io_current`.
 - Apache Polaris: официальный Trino guide документирует REST endpoint `/api/catalog`, warehouse/catalog name, OAuth2 и S3-compatible endpoint/path-style configuration. Источник: Apache Polaris repository documentation, Context7 `/apache/polaris`.
 
-Конкретная комбинация версий и фактическое выполнение не проверялись в Specify; это явно покрывается AC-012.
+Для schema evolution дополнительно проверена документация:
 
-## 9. Передача состояния
+- Trino 484 Iceberg connector поддерживает безопасные add/drop/rename, включая nested fields, и только widening type changes: `INTEGER→BIGINT`, `REAL→DOUBLE`, увеличение precision `DECIMAL` без смены scale. Источник: Trino 484, `/trinodb/trino/484`, `connector/iceberg.md`.
+- Trino Iceberg поддерживает historical read по snapshot ID через `FOR VERSION AS OF`. Источник: Trino 484, `/trinodb/trino/484`, `connector/iceberg.md`.
+- Apache Iceberg 1.10.1 выполняет add/drop/rename/reorder/type promotion как metadata changes без переписывания data files и использует уникальные field IDs, чтобы добавленная колонка не читала значения другой колонки. Источник: Apache Iceberg 1.10.1, `/apache/iceberg/apache-iceberg-1.10.1`, `docs/evolution.md` и format specification.
+
+Фактическое выполнение schema evolution sequence не проводилось в Specify; оно покрывается AC-013–AC-020.
+
+## 10. Передача состояния
 
 ### Согласовано источником
 
@@ -379,9 +659,10 @@ AC-001 и AC-002 следуют из исходника. AC-003–AC-012 явл�
 - Bronze сохраняет все строки, Silver канонизирует события по `event_id`, принимает поздние события и использует детерминированный порядок `(event_at, received_at, event_id)`;
 - SCD2 применяется к плану маршрута, а факт доставки использует версию, действовавшую на `picked_up_at`;
 - первый законченный срез — core vertical slice со всеми тремя видами аналитики и тестами;
-- schema evolution, time travel, partitioning benchmark и maintenance отложены на последующие срезы, но остаются в полном scope;
+- core vertical slice завершён; schema evolution выбран следующим срезом, а time travel, partitioning benchmark и maintenance остаются последующими;
+- контракты завершённого core slice изменять нельзя;
 - после одобрения агент реализует весь scope и принимает обратимые технические решения, не изменяющие бизнес-результат;
-- для геодезического расстояния принято использование Trino `ST_Distance` над `SphericalGeography`; документация проверена, выполнение не проверялось;
+- для геодезического расстояния принято использование Trino `ST_Distance` над `SphericalGeography`; выполнение подтверждено core acceptance workflow;
 - Gold-факт доставки — accumulating snapshot с одной строкой на посылку; у незавершённой доставки финальные метрики равны `NULL`;
 - посещения хаба формируются строгим pairing и получают `visit_seq`; некорректные последовательности считаются ошибкой качества;
 - `promised_delivery_at` вычисляется из SLA SCD2-версии маршрута, действующей на `picked_up_at`.
@@ -395,13 +676,15 @@ AC-001 и AC-002 следуют из исходника. AC-003–AC-012 явл�
 
 ### Текущая точка остановки
 
-Спецификация имеет статус `APPROVED`. Первый срез, делегирование и критерии AC-001–AC-012 одобрены; решения последующих срезов явно отложены. Технические проверки описаны, но не выполнялись.
+Core vertical slice, делегирование и критерии AC-001–AC-012 остаются `APPROVED` и завершены. Schema evolution slice в DEC-028–DEC-033, AC-013–AC-020 и разделе 8 также явно одобрен. Следующие срезы — полноценный time travel, partitioning/file pruning и maintenance — остаются отложенными.
 
 ### Передача следующему этапу
 
-- использовать [`docs/spec.md`](./spec.md) как утверждённый контракт;
-- перед реализацией закрепить совместимые версии компонентов и конкретный S3-compatible storage согласно DEC-027;
-- при реализации подтвердить интеграцию и выполнение через AC-012;
-- изменение бизнес-правил, scope или ожидаемых результатов требует возврата затронутой части спецификации в `DRAFT`.
+- использовать [`docs/spec.md`](./spec.md) как утверждённый контракт schema evolution slice;
+- реализация должна использовать pinned core stack и отдельный task-owned run prefix;
+- core fixtures, модели и AC-003–AC-012 не изменять;
+- snapshot IDs `S0`/`S1` получать во время запуска из `$snapshots`, не хардкодить;
+- проверить OPEN-021 через AC-018; несовпадение наблюдаемого поведения требует возврата затронутой части в `DRAFT`;
+- изменение ожидаемой совместимости, schema operations или core boundary требует возврата затронутой части в `DRAFT`.
 
-Этап Specify завершён. Реализация автоматически не запускается.
+Этап Specify завершён со статусом `APPROVED`. Реализация автоматически не запускается.
