@@ -1,0 +1,104 @@
+name: iceberg-trino-dbt
+
+services:
+  rustfs:
+    image: rustfs/rustfs:1.0.4@sha256:ed9210d6411d77ffceb70d94b964a3cb7d225983368bc25bebe01e995293dcc2
+    restart: unless-stopped
+    environment:
+      RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:?set RUSTFS_ACCESS_KEY}
+      RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:?set RUSTFS_SECRET_KEY}
+      RUSTFS_VOLUMES: /data
+      RUSTFS_ADDRESS: ":9000"
+      RUSTFS_CONSOLE_ENABLE: "true"
+      RUSTFS_CONSOLE_ADDRESS: ":9001"
+    ports:
+      - "${RUSTFS_API_PORT:-9000}:9000"
+      - "${RUSTFS_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - rustfs-data:/data
+    networks:
+      - lakehouse
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          curl --fail http://127.0.0.1:9000/health &&
+          curl --fail http://127.0.0.1:9001/rustfs/console/health
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+    cpus: 0.50
+    mem_limit: 1g
+
+  polaris:
+    image: apache/polaris:1.8.0@sha256:347615e736cab2c9be0d8c464552ac930be4755302bb0aeb745216bbae99ba5b
+    restart: unless-stopped
+    depends_on:
+      rustfs:
+        condition: service_healthy
+        restart: true
+    environment:
+      POLARIS_BOOTSTRAP_CREDENTIALS: >-
+        POLARIS,${POLARIS_CLIENT_ID:?set POLARIS_CLIENT_ID},${POLARIS_CLIENT_SECRET:?set POLARIS_CLIENT_SECRET}
+      polaris.realm-context.realms: POLARIS
+      quarkus.otel.sdk.disabled: "true"
+    ports:
+      - "${POLARIS_API_PORT:-8181}:8181"
+    networks:
+      - lakehouse
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8182/q/health"]
+      interval: 2s
+      timeout: 10s
+      retries: 20
+      start_period: 10s
+    cpus: 1.00
+    mem_limit: 2g
+
+  trino:
+    image: trinodb/trino:484@sha256:2704eb53935af5e582d63d6033e9bf99d20c325e9b0e30b1016ef59a4773979f
+    restart: unless-stopped
+    depends_on:
+      polaris:
+        condition: service_healthy
+        restart: true
+    ports:
+      - "${TRINO_PORT:-8080}:8080"
+    networks:
+      - lakehouse
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/v1/info"]
+      interval: 5s
+      timeout: 10s
+      retries: 20
+      start_period: 30s
+    cpus: 2.00
+    mem_limit: 4g
+
+  dbt:
+    profiles: ["tools"]
+    image: iceberg-trino-dbt-dbt:1.0.0
+    build:
+      context: ./docker/dbt
+    depends_on:
+      trino:
+        condition: service_healthy
+    environment:
+      DBT_TRINO_USER: ${DBT_TRINO_USER:-dbt}
+      DBT_TRINO_HOST: trino
+      DBT_TRINO_PORT: "8080"
+      DBT_TRINO_CATALOG: ${DBT_TRINO_CATALOG:-polaris}
+      DBT_TRINO_SCHEMA: ${DBT_TRINO_SCHEMA:-default}
+    volumes:
+      - ./dbt:/usr/app/dbt
+    networks:
+      - lakehouse
+    cpus: 0.50
+    mem_limit: 1g
+
+networks:
+  lakehouse:
+
+volumes:
+  rustfs-data:

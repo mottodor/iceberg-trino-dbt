@@ -149,3 +149,49 @@ none
 
 ### Next action
 User authorized staging and committing this reviewed checkpoint; no push or transition to another task is authorized.
+
+## TASK_ID: BOOT-ENV-001
+
+- Source: `docs/bootstrap.md`, section 5.2, “BOOT-ENV-001 — Compose stack”
+- Status: REVIEW_READY
+- Updated: 2026-10-29T12:27:04+03:00
+- Baseline HEAD: 527f47374615061716593c84789bf596def0ab52
+
+### Progress
+- Implemented: added root `compose.yaml` with the RustFS, Polaris, Trino, and on-demand dbt services, project-scoped network/volume, health-gated dependencies, resource limits, and pinned images/build inputs; rendered and mutation assertions passed; the default stack reached healthy state and was stopped while its named RustFS volume and both pre-existing probe volumes were preserved.
+- Remaining: none.
+
+### AC evidence
+| AC / ссылка на источник | Result | Проверка / evidence / причина |
+|---|---|---|
+| `docs/bootstrap.md` §5.2 BOOT-ENV-001, required Compose artifacts | PASS | fast: rendered JSON assertion passed for the exact four services, project-scoped `iceberg-trino-dbt_lakehouse` network and `iceberg-trino-dbt_rustfs-data` volume, three healthchecks, health-gated dependency chain, per-service CPU/memory limits, and the on-demand `tools` profile. |
+| `docs/bootstrap.md` §5.2 BOOT-ENV-001, `docker compose config` and pinned images | PASS | fast: `docker compose --profile tools config --quiet` exited 0; image assertion found the three exact tag+digest runtime pins plus versioned local dbt image and no `latest` reference. |
+| `docs/bootstrap.md` §5.2 BOOT-ENV-001, health-gated startup semantics | PASS | standard: `docker compose up -d --wait --wait-timeout 240 rustfs polaris trino` exited 0 in 37 seconds and started dependencies in RustFS → Polaris → Trino order; all three containers were healthy on the project network with the declared runtime limits, host endpoint probes returned HTTP 200 when bypassing the shell proxy, and a condition mutation was detected by the gate assertion. |
+
+### Issues
+#### BOOT-ENV-001/B01
+- State: RESOLVED
+- Category: TEST
+- Affects: mandatory fast-check and EVIDENCE_GATE
+- Problem: the first validation harness did not include the profiled dbt service and invoked an unavailable `python` alias, so the complete structure/image assertions did not execute successfully.
+- Evidence: the image wrapper exited 1 after listing only the three default-profile runtime images; the JSON structure wrapper exited 127 with `python: command not found`.
+- Unblock: rerun with `docker compose --profile tools config` and the available `python3` binary.
+- Resolution: rerunning with `docker compose --profile tools config` and `python3` made both the complete image assertion and JSON structure assertion exit 0.
+
+#### BOOT-ENV-001/B02
+- State: RESOLVED
+- Category: TEST
+- Affects: `docs/bootstrap.md` §5.2 BOOT-ENV-001 health-gated startup evidence
+- Problem: the first post-start inspection omitted the required Compose interpolation environment, and the combined host endpoint probe did not identify which URL failed.
+- Evidence: the inspection wrapper emitted missing-variable errors and empty container IDs; the endpoint wrapper exited 22 without its success marker, while the preceding `docker compose up -d --wait` had exited 0 after all three services became healthy.
+- Unblock: rerun Compose inspection with the same local test environment and probe each endpoint separately before deciding which evidence is applicable.
+- Resolution: exporting the required local test variables made runtime inspection succeed for all containers; individual endpoint probes showed the shell proxy caused the misleading 403 responses, and `curl --noproxy '*'` returned HTTP 200 for both RustFS endpoints and Trino `/v1/info`.
+
+### Review
+- Verdict: OK
+- Calls: 1
+- Fix iterations: 0
+- Details: one fresh read-only reviewer inspected the complete tracked/untracked diff, all of `compose.yaml`, the BOOT-ENV-001 source and status section, unchanged prior task sections, supplied runtime/config/mutation/cleanup evidence, scope boundaries, resource limits, credentials handling, and compatibility with BOOT-ENV-002/004; it found no BLOCKER, DEFERRED, or IMPROVEMENT and returned `VERDICT OK`.
+
+### Next action
+User reviews the checkpoint and, if accepted, stages and commits `compose.yaml` and `docs/status.md`; no push or next-task transition is authorized.
