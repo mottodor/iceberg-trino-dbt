@@ -890,3 +890,40 @@ After the user-authorized checkpoint commit, await separate authorization for pu
 
 ### Next action
 User reviews the checkpoint and, if accepted, stages and commits `docs/status.md`; no push or transition to another task is authorized.
+
+## TASK_ID: SE-ENV-001
+
+- Source: `docs/bootstrap-schema-evolution.md` §5.2, “SE-ENV-001 — schema-evolution acceptance entry point”
+- Status: REVIEW_READY
+- Updated: 2026-10-29T23:07:59+03:00
+- Baseline HEAD: 65798603483a5e5d56d419004358022b09c00de9
+
+### Progress
+- Implemented: added executable `scripts/run_schema_evolution_acceptance.py` as a subclass of the accepted core runner, with isolated baseline/evolution names, exact collision ownership gate, Compose lifecycle, task-scoped cleanup, inherited secret scan/evidence manifest/atomic summary, AC-013–AC-020 result slots, and an explicit non-success placeholder for the later SE-IMP workflow.
+- Remaining: none.
+
+### AC evidence
+| AC / ссылка на источник | Result | Проверка / evidence / причина |
+|---|---|---|
+| `docs/bootstrap-schema-evolution.md` §5.2 SE-ENV-001, runner entry point and lifecycle/evidence contract | PASS | fast: LSP diagnostics reported zero findings; `python3 -m py_compile scripts/run_acceptance.py scripts/run_schema_evolution_acceptance.py` exited 0; the new file is executable; core runner source/CLI remained unchanged; the subclass reuses accepted lifecycle, command capture, secret scan, manifest and atomic summary primitives while preventing a false success before SE-IMP-001. |
+| `docs/bootstrap-schema-evolution.md` §5.2 SE-ENV-001, CLI/preflight refusal paths | PASS | fast: `--help` exposed `--run-id` and `--evidence-root`; invalid `INVALID-ID` exited 2 with the run-ID contract; a valid run with all four credentials unset exited 1 before creating evidence; a pre-existing evidence directory exited 1 with the collision refusal. |
+| `docs/bootstrap-schema-evolution.md` §5.2 SE-ENV-001, ownership-safe failure cleanup | PASS | standard: an in-memory lifecycle harness proved a pre-existing exact evolution-schema collision performs zero cleanup and never enters the workflow; an injected failure after successful ownership performs exactly one cleanup. A cleanup harness asserted only `<run_id>_evolution` and the four `<run_id>_baseline_*` schemas plus `warehouse/<run_id>_` are targeted; an injected secret-scan failure left an atomic `outcome=FAIL` summary and manifest. |
+
+### Issues
+#### SE-ENV-001/B01
+- State: RESOLVED
+- Category: REVIEW
+- Affects: mandatory STATUS_RECORD and FRESH_READ_ONLY_REVIEW gates
+- Problem: after the successful first reviewer call, `Progress/Remaining` still described that completed review as pending; correcting Progress is outside the narrow post-review finalization exception.
+- Evidence: the first fresh reviewer returned `VERDICT OK` with no findings, while the reviewed section still contained `Remaining: independent fresh read-only review only`.
+- Unblock: set `Remaining` to `none`, validate the status/diff, and obtain one fresh targeted re-review of the corrected section.
+- Resolution: `Remaining` is `none`; the status/diff gate passed, and the second fresh targeted reviewer found no issues and returned `VERDICT OK`.
+
+### Review
+- Verdict: OK
+- Calls: 2
+- Fix iterations: 1
+- Details: the first fresh read-only reviewer inspected the complete tracked/untracked diff, implementation, source contracts, safety/evidence behavior and status preservation and returned `VERDICT OK`. After the B01 status correction, the second fresh targeted reviewer verified the full current diff and corrected section, found no BLOCKER, DEFERRED or IMPROVEMENT, and returned `VERDICT OK`.
+
+### Next action
+User reviews the checkpoint and, if accepted, stages and commits `scripts/run_schema_evolution_acceptance.py` and `docs/status.md`; no push or transition to another task is authorized.
