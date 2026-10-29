@@ -1,0 +1,2 @@
+fixture_row_id,batch_id,event_id,package_id,event_type,event_at,received_at,hub_code,longitude,latitude
+NEG-CONFLICT-001,negative_conflicting_payload,P3-E02,P3,picked_up,2025-02-10T09:00:00Z,2025-02-10T09:01:00Z,A,0.1,0.0

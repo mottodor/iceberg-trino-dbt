@@ -1,0 +1,5 @@
+fixture_row_id,batch_id,package_id,shipment_id,route_id
+PACKAGE-P1,batch_1,P1,S1,R1
+PACKAGE-P2,batch_1,P2,S2,R1
+PACKAGE-P3,batch_1,P3,S2,R1
+PACKAGE-P4,batch_1,P4,S3,R1

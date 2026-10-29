@@ -1,0 +1,40 @@
+version: 2
+
+models:
+  - name: bronze_hubs
+    description: Immutable raw copy of deterministic hub fixture rows.
+    columns:
+      - name: fixture_row_id
+        data_tests: [not_null, unique]
+      - name: batch_id
+        data_tests: [not_null]
+  - name: bronze_packages
+    description: Immutable raw copy of deterministic package fixture rows.
+    columns:
+      - name: fixture_row_id
+        data_tests: [not_null, unique]
+      - name: batch_id
+        data_tests: [not_null]
+  - name: bronze_route_plan_changes
+    description: Immutable raw copy of route-plan change fixture rows.
+    columns:
+      - name: fixture_row_id
+        data_tests: [not_null, unique]
+      - name: batch_id
+        data_tests: [not_null]
+  - name: bronze_route_checkpoints
+    description: Immutable raw copy of route checkpoint fixture rows.
+    columns:
+      - name: fixture_row_id
+        data_tests: [not_null, unique]
+      - name: batch_id
+        data_tests: [not_null]
+  - name: bronze_tracking_events
+    description: Immutable raw event rows; event_id is intentionally not unique in Bronze.
+    columns:
+      - name: fixture_row_id
+        data_tests: [not_null, unique]
+      - name: batch_id
+        data_tests: [not_null]
+      - name: event_id
+        data_tests: [not_null]

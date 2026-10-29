@@ -1,0 +1,7 @@
+fixture_row_id,batch_id,route_version_id,checkpoint_seq,hub_code
+CHECKPOINT-R1-V1-01,batch_1,R1-V1,1,A
+CHECKPOINT-R1-V1-02,batch_1,R1-V1,2,B
+CHECKPOINT-R1-V1-03,batch_1,R1-V1,3,C
+CHECKPOINT-R1-V2-01,batch_1,R1-V2,1,A
+CHECKPOINT-R1-V2-02,batch_1,R1-V2,2,D
+CHECKPOINT-R1-V2-03,batch_1,R1-V2,3,C

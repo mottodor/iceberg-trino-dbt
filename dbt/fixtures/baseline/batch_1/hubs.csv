@@ -1,0 +1,6 @@
+fixture_row_id,batch_id,hub_code,hub_name,longitude,latitude
+HUB-A,batch_1,A,Origin Hub,0.0,0.0
+HUB-X,batch_1,X,Detour Hub,0.5,0.0
+HUB-B,batch_1,B,Version One Hub,1.0,0.0
+HUB-D,batch_1,D,Version Two Hub,1.5,0.0
+HUB-C,batch_1,C,Destination Hub,2.0,0.0

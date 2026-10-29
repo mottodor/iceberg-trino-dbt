@@ -1,0 +1,2 @@
+fixture_row_id,batch_id,event_id,package_id,event_type,event_at,received_at,hub_code,longitude,latitude
+NEG-DEPARTURE-001,negative_departure_without_arrival,P4-N01,P4,departed_at_hub,2025-02-12T21:00:00Z,2025-02-12T21:01:00Z,B,1.0,0.0

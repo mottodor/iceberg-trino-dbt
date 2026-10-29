@@ -408,3 +408,68 @@ User reviews the checkpoint and, if accepted, stages and commits `docs/status.md
 
 ### Next action
 User reviews the checkpoint and, if accepted, stages and commits `dbt/dbt_project.yml`, `dbt/macros/generate_schema_name.sql`, `dbt/models/fixtures/sources.yml`, `dbt/tests/assert_schema_naming_convention.sql`, and `docs/status.md`; no push or next-task transition is authorized.
+
+## TASK_ID: IMP-002
+
+- Source: `docs/bootstrap.md`, section 5.3, “IMP-002 — deterministic fixtures и immutable Bronze”; `docs/spec.md`, section 5 fixture package, DEC-010, DEC-016, DEC-022, DEC-025, AC-004, AC-005, AC-009 and AC-011
+- Status: REVIEW_READY
+- Updated: 2026-10-29T15:32:44+03:00
+- Baseline HEAD: 5da246f8d9eaa89a6c852d68fe63350353f9addf
+
+### Progress
+- Implemented: added the deterministic baseline and three isolated negative fixture sets, a validating idempotent Trino loader, five raw Bronze models, model constraints, and fixture/Bronze contract assertions. Both staged batches and their replays passed; the final 28-row baseline passed all 18 Bronze tests and direct duplicate/late-event assertions; the contract mutation produced the intended named failure and was restored; all three negative scenarios were loaded and observed in isolated Bronze schemas; ten baseline tables and 59 Iceberg objects were listed; task schemas/objects were purged and the initially stopped stack was restored with all three named volumes preserved.
+- Remaining: none.
+
+### AC evidence
+| AC / ссылка на источник | Result | Проверка / evidence / причина |
+|---|---|---|
+| `docs/spec.md` AC-004, IMP-002 contribution | PASS | acceptance: batch 1 inserted 40 rows and replay inserted 0; batch 2 inserted five event rows and replay inserted 0. Final Bronze held 28 events, two distinct `fixture_row_id` rows for `P3-E02`, and one distinct business payload; `assert_bronze_matches_fixtures` and the baseline contract test passed. |
+| `docs/spec.md` AC-005, IMP-002 contribution | PASS | acceptance: stage 1 held 23 events and one `P3-E02`; after batch 2 Bronze held the exact five expected P3 batch-2 IDs, including four B/X visit rows received after delivery and the duplicate. The downstream Silver/Gold recalculation remains in later tasks. |
+| `docs/spec.md` AC-009, IMP-002 contribution | PASS | standard/acceptance: static validation covered all three isolated scenario files; separate schemas produced `P3-E02` with three rows/two longitude payloads, a P4 departure from unopened B, and two P4 arrivals at still-open D. DQ test implementation remains in IMP-003. |
+| `docs/spec.md` AC-011, IMP-002 contribution | PASS | acceptance: all 18 Bronze tests passed; exact counts were hubs=5, packages=4, route changes=2, checkpoints=6, events=28; shipment S2 contained independent P2/P3 rows; source-to-Bronze fidelity passed. A one-row Bronze mutation caused the named contract test to `FAIL 1`, then final restoration passed. |
+
+### Issues
+#### IMP-002/B01
+- State: RESOLVED
+- Category: TEST
+- Affects: staged runtime evidence for AC-004, AC-005 and AC-011
+- Problem: the first batch-1 Bronze materialization command passed a duplicate `dbt` executable token; the next corrected invocation still used default artifact paths that the container UID could not write and also exited 2 before model output.
+- Evidence: both batch-1 loader runs passed with 40 inserted rows then 40 existing rows; the two model command attempts exited 2 before model output, while a named diagnostic container confirmed the image entrypoint and runtime itself were healthy.
+- Unblock: invoke the service with `run` as the dbt subcommand and direct `DBT_TARGET_PATH`/`DBT_LOG_PATH` to writable task-local `/tmp` paths.
+- Resolution: the corrected command created all five Bronze tables with counts 5/4/6/2/23 and exited 0; a direct Trino assertion confirmed 23 stage-1 events and exactly one P3 `picked_up` row.
+
+#### IMP-002/B02
+- State: RESOLVED
+- Category: TEST
+- Affects: final baseline evidence for AC-004, AC-005 and AC-011
+- Problem: the baseline Bronze contract test qualifies a column after a Trino `JOIN ... USING`, so the final dbt build errors instead of evaluating the assertion.
+- Evidence: batch 2 inserted five rows and replayed with zero inserts; the build created all five final Bronze tables and 17 other tests passed, but `assert_baseline_bronze_contract` errored with `COLUMN_NOT_FOUND: Column 'expected.table_name' cannot be resolved` at its count comparison.
+- Unblock: replace the `USING` join with an explicit `ON` predicate, rerun the targeted test, and then rerun the final affected Bronze checks.
+- Resolution: both joins now use explicit `ON` predicates; the targeted contract test and all 18 Bronze tests passed, and the final direct 28-row duplicate/late-event assertion returned true.
+
+#### IMP-002/B03
+- State: RESOLVED
+- Category: TEST
+- Affects: mandatory FINAL_EVIDENCE_AND_DIFF_GATE
+- Problem: the first untracked-file whitespace wrapper scanned unchanged repository documents instead of only this task's changed/new paths.
+- Evidence: final Python compilation, fixture validation, dbt parse, and exact Bronze selection passed; the wrapper then exited 1 only for pre-existing trailing spaces in `docs/bootstrap.md`/`docs/spec.md` and the pre-existing missing final newline in `docs/idea.md`.
+- Unblock: scope the whitespace assertion to tracked changes and the explicit untracked task file list, without modifying unrelated documents, then rerun `git diff --check` and the scoped check.
+- Resolution: the scoped check covered all 19 changed/new paths and passed; `git diff --check` passed, the IMP-002 section remained unique, and unrelated documents were not modified.
+
+#### IMP-002/B04
+- State: RESOLVED
+- Category: REVIEW
+- Affects: mandatory STATUS_RECORD and FRESH_READ_ONLY_REVIEW gates
+- Problem: the first reviewer returned `VERDICT OK`, but `Progress/Remaining` still described that now-completed review as pending; correcting Progress is outside the narrow post-review finalization exception.
+- Evidence: the reviewer confirmed all 18 new files and the tracked status diff, found no blocker, and returned `VERDICT OK`; the reviewed section still contained `Remaining: independent fresh read-only review only`.
+- Unblock: set `Remaining` to `none`, preserve the reviewer’s non-blocking improvement note, rerun the status/diff checks, and obtain one fresh targeted re-review.
+- Resolution: `Remaining` is now `none`; the status/diff checks passed, and the second fresh read-only reviewer confirmed the corrected section, unchanged implementation evidence, and non-blocking improvement with `VERDICT OK`.
+
+### Review
+- Verdict: OK
+- Calls: 2
+- Fix iterations: 1
+- Details: the first fresh read-only reviewer inspected the complete tracked/untracked diff and source contracts and returned `VERDICT OK`. After the status-only correction, the second fresh targeted reviewer confirmed the corrected section and returned `VERDICT OK`. IMPROVEMENT: exact tuple assertions for the four P3 late-event payloads would harden future fixture edits; current checked-in values are correct and this remains non-blocking.
+
+### Next action
+User reviews the checkpoint and, if accepted, stages and commits the listed IMP-002 files; no push or next-task transition is authorized.

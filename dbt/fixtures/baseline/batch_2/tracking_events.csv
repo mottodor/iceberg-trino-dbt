@@ -1,0 +1,6 @@
+fixture_row_id,batch_id,event_id,package_id,event_type,event_at,received_at,hub_code,longitude,latitude
+EVENT-P3-05,batch_2,P3-E05,P3,arrived_at_hub,2025-02-10T15:00:00Z,2025-02-12T09:00:00Z,B,1.0,0.0
+EVENT-P3-06,batch_2,P3-E06,P3,departed_at_hub,2025-02-10T17:00:00Z,2025-02-12T09:01:00Z,B,1.0,0.0
+EVENT-P3-07,batch_2,P3-E07,P3,arrived_at_hub,2025-02-11T10:00:00Z,2025-02-12T09:02:00Z,X,0.5,0.0
+EVENT-P3-08,batch_2,P3-E08,P3,departed_at_hub,2025-02-11T11:00:00Z,2025-02-12T09:03:00Z,X,0.5,0.0
+EVENT-P3-09,batch_2,P3-E02,P3,picked_up,2025-02-10T09:00:00Z,2025-02-10T09:01:00Z,A,0.0,0.0
