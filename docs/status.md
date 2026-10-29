@@ -277,3 +277,68 @@ User reviews the checkpoint and, if accepted, stages and commits `compose.yaml` 
 
 ### Next action
 User reviews the checkpoint and, if accepted, stages and commits `compose.yaml`, `infra/rustfs/create-bucket.sh`, `infra/polaris/bootstrap.sh`, `infra/trino/catalog/lakehouse.properties`, and `docs/status.md`; no push or next-task transition is authorized.
+
+## TASK_ID: BOOT-ENV-003
+
+- Source: `docs/bootstrap.md`, section 5.2, “BOOT-ENV-003 — dbt execution image и dependency lock”; verification dependency `docs/bootstrap.md` section 4.4, “PROBE-002 — dbt adapter handshake”
+- Status: REVIEW_READY
+- Updated: 2026-10-29T13:31:28+03:00
+- Baseline HEAD: f1e121a0a911a9a697c07b982f806312fe973ee9
+
+### Progress
+- Implemented: confirmed the task artifacts already introduced by the accepted PROBE-002 prerequisite: a digest-pinned minimal Python image running dbt as UID 10001, the direct `dbt-core`/`dbt-trino` pins, and a 58-package SHA-256 lock installed with pip hash checking and no dependency re-resolution. The final image built, parsed the project, connected to the current stack, created and tested the Iceberg smoke model, and exposed the exact expected row; the task schema and objects were then removed and the pre-existing RustFS volume was preserved.
+- Remaining: none.
+
+### AC evidence
+| AC / ссылка на источник | Result | Проверка / evidence / причина |
+|---|---|---|
+| `docs/bootstrap.md` §5.2 BOOT-ENV-003, minimal containerized dbt execution image | PASS | fast: static Dockerfile/Compose assertions and `docker compose --profile tools config --quiet` passed; standard: cached final image build exited 0 in 2 seconds, ran as UID 10001, included Git, and used the pinned Python base digest. |
+| `docs/bootstrap.md` §5.2 BOOT-ENV-003, direct pins `dbt-core==1.11.11` and `dbt-trino==1.10.2` | PASS | fast: `requirements.in` contained exactly the two required direct pins; runtime `dbt --version` reported Core `1.11.11` and Trino plugin `1.10.2`; parse passed and quiet selection returned exactly `probe002_smoke` and `assert_probe002_smoke`. |
+| `docs/bootstrap.md` §5.2 BOOT-ENV-003, resolved hash lock excludes floating Python transitives | PASS | fast/standard: lock assertion found 58 exact `==` entries, every entry SHA-256 hashed, with lock SHA-256 `d39a006b767024dfe5128cde43a5ee22b8744496bfcb122fffb4eff7325bb8f3`; replacing both dbt-core hashes with invalid values made pip exit 1 in 20 seconds with the intended `THESE PACKAGES DO NOT MATCH THE HASHES` error. |
+| `docs/bootstrap.md` §4.4 PROBE-002, adapter handshake | PASS | acceptance: fresh stack reached healthy state in 42 seconds; exact versions passed, `dbt debug` ended with `All checks passed!`, the smoke model created one row, the named singular test passed, and Trino returned exactly `1,dbt-adapter-ok`. Five task objects existed before cleanup and zero after `DROP SCHEMA ... CASCADE`; `docker compose down` restored the initially stopped state in 2 seconds while preserving `iceberg-trino-dbt_rustfs-data`. |
+
+### Issues
+#### BOOT-ENV-003/B01
+- State: RESOLVED
+- Category: TEST
+- Affects: mandatory fast-check and EVIDENCE_GATE
+- Problem: the first exact dbt selection wrapper counted dbt informational output together with selected node names, so its final two-line assertion exited non-zero after parse and selection had executed.
+- Evidence: `dbt parse` exited 0 and `dbt ls` visibly selected `probe002_smoke` and `assert_probe002_smoke`, but the combined wrapper exited 1 because the captured stream also contained dbt log lines.
+- Unblock: rerun `dbt ls` in quiet machine-readable mode and assert the exact selected node set.
+- Resolution: quiet `dbt ls` exited 0 in 3 seconds and the sorted output matched exactly the two expected node names.
+
+#### BOOT-ENV-003/B02
+- State: RESOLVED
+- Category: TEST
+- Affects: final adapter-handshake row and cleanup evidence
+- Problem: the first exact-row wrapper queried nonexistent smoke column `marker`, so it stopped before asserting the row and performing cleanup.
+- Evidence: Trino exited 1 with `Column 'marker' cannot be resolved`; the model defines the expected column as `status`.
+- Unblock: query the declared `id, status` columns, then perform and verify task-schema cleanup.
+- Resolution: the corrected query returned exactly `1,dbt-adapter-ok`; cleanup removed the schema and all five task-prefix objects, then restored the initially stopped Compose state while preserving named volumes.
+
+#### BOOT-ENV-003/B03
+- State: RESOLVED
+- Category: REVIEW
+- Affects: mandatory STATUS_RECORD and FRESH_READ_ONLY_REVIEW gates
+- Problem: after final review, `Progress/Remaining` still said that independent review remained, which was inconsistent with the recorded `Verdict: OK` and `REVIEW_READY` outcome.
+- Evidence: the reread final section contained `Remaining: independent fresh read-only review only` together with `Review: OK`.
+- Unblock: correct `Remaining` to `none`, revalidate the status section and diff, then obtain a fresh read-only re-review because this content change is outside the narrow post-review finalization exception.
+- Resolution: `Remaining` now equals `none`; the section assertion and `git diff --check` both passed, and the third fresh reviewer confirmed the corrected final section with `VERDICT OK`.
+
+#### BOOT-ENV-003/B04
+- State: RESOLVED
+- Category: REVIEW
+- Affects: mandatory STATUS_RECORD and FRESH_READ_ONLY_REVIEW gates
+- Problem: after resolving B03, `Next action` still instructed the already completed Remaining-field correction and status check, leaving the task record internally stale.
+- Evidence: the second fresh reviewer cited `docs/status.md` and returned `VERDICT BLOCK`; B03 Resolution proves the first two actions in the stale `Next action` were already completed.
+- Unblock: replace `Next action` with only the still-pending fresh targeted re-review, validate the section, and rerun review.
+- Resolution: before the final review, `Next action` named only the pending targeted re-review and the section assertion plus `git diff --check` passed; the third fresh reviewer then confirmed the correction with `VERDICT OK`.
+
+### Review
+- Verdict: OK
+- Calls: 3
+- Fix iterations: 2
+- Details: the first fresh reviewer returned `VERDICT OK` before B03 correction. The second fresh reviewer returned `VERDICT BLOCK` for stale `Next action`; after the targeted status fix, the third fresh reviewer inspected the complete corrected section and diff, found no BLOCKER, DEFERRED, or IMPROVEMENT, and returned `VERDICT OK`.
+
+### Next action
+User reviews the checkpoint and, if accepted, stages and commits `docs/status.md`; no push or next-task transition is authorized.
