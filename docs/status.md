@@ -3,7 +3,7 @@
 ## TASK_ID: PROBE-001
 
 - Source: `docs/bootstrap.md`, section 4.4, “PROBE-001 — совместимость pinned stack”
-- Status: REVIEW_READY
+- Status: DONE
 - Updated: 2026-10-29T10:23:25+03:00
 - Baseline HEAD: 0e0049d77b9995a8dfd3dd81d1c0a1a51b5c2827
 
@@ -58,7 +58,7 @@ User authorized staging and committing this reviewed checkpoint; no push or tran
 ## TASK_ID: PROBE-002
 
 - Source: `docs/bootstrap.md`, section 4.4, “PROBE-002 — dbt adapter handshake”
-- Status: REVIEW_READY
+- Status: DONE
 - Updated: 2026-10-29T11:22:09+03:00
 - Baseline HEAD: 0fe79f1897e1310b35265c29e908b718c9493f05
 
@@ -123,7 +123,7 @@ After committing this user-authorized reviewed checkpoint, await separate author
 ## TASK_ID: PROBE-003
 
 - Source: `docs/bootstrap.md`, section 4.4, “PROBE-003 — геодезические ожидания fixtures”; `docs/spec.md`, DEC-020 and DEC-024
-- Status: REVIEW_READY
+- Status: DONE
 - Updated: 2026-10-29T12:11:56+03:00
 - Baseline HEAD: af47c524d9a8984eb401f4c5f84845f9145f43e9
 
@@ -153,7 +153,7 @@ User authorized staging and committing this reviewed checkpoint; no push or tran
 ## TASK_ID: BOOT-ENV-001
 
 - Source: `docs/bootstrap.md`, section 5.2, “BOOT-ENV-001 — Compose stack”
-- Status: REVIEW_READY
+- Status: DONE
 - Updated: 2026-10-29T12:27:04+03:00
 - Baseline HEAD: 527f47374615061716593c84789bf596def0ab52
 
@@ -199,7 +199,7 @@ User reviews the checkpoint and, if accepted, stages and commits `compose.yaml` 
 ## TASK_ID: BOOT-ENV-002
 
 - Source: `docs/bootstrap.md`, section 5.2, “BOOT-ENV-002 — конфигурация Trino/Polaris/RustFS”
-- Status: REVIEW_READY
+- Status: DONE
 - Updated: 2026-10-29T13:05:38+03:00
 - Baseline HEAD: 540fc19b1f77b3e34c3a9877345e87615a5be948
 
@@ -281,7 +281,7 @@ User reviews the checkpoint and, if accepted, stages and commits `compose.yaml`,
 ## TASK_ID: BOOT-ENV-003
 
 - Source: `docs/bootstrap.md`, section 5.2, “BOOT-ENV-003 — dbt execution image и dependency lock”; verification dependency `docs/bootstrap.md` section 4.4, “PROBE-002 — dbt adapter handshake”
-- Status: REVIEW_READY
+- Status: DONE
 - Updated: 2026-10-29T13:31:28+03:00
 - Baseline HEAD: f1e121a0a911a9a697c07b982f806312fe973ee9
 
@@ -346,7 +346,7 @@ User reviews the checkpoint and, if accepted, stages and commits `docs/status.md
 ## TASK_ID: IMP-001
 
 - Source: `docs/bootstrap.md`, section 5.3, “IMP-001 — dbt skeleton и layer conventions”; `docs/spec.md`, DEC-005, DEC-006, DEC-020, DEC-024, DEC-027, AC-001 and AC-012
-- Status: REVIEW_READY
+- Status: DONE
 - Updated: 2026-10-29T15:01:26+03:00
 - Baseline HEAD: 7f86432a6c6e3e3c315a205b57c5df18b2250026
 
@@ -412,7 +412,7 @@ User reviews the checkpoint and, if accepted, stages and commits `dbt/dbt_projec
 ## TASK_ID: IMP-002
 
 - Source: `docs/bootstrap.md`, section 5.3, “IMP-002 — deterministic fixtures и immutable Bronze”; `docs/spec.md`, section 5 fixture package, DEC-010, DEC-016, DEC-022, DEC-025, AC-004, AC-005, AC-009 and AC-011
-- Status: REVIEW_READY
+- Status: DONE
 - Updated: 2026-10-29T15:32:44+03:00
 - Baseline HEAD: 5da246f8d9eaa89a6c852d68fe63350353f9addf
 
@@ -477,7 +477,7 @@ User reviews the checkpoint and, if accepted, stages and commits the listed IMP-
 ## TASK_ID: IMP-003
 
 - Source: `docs/bootstrap.md`, section 5.3, “IMP-003 — canonical/typed Silver и DQ”; `docs/spec.md`, DEC-010, DEC-016, DEC-022, AC-004, AC-005 and AC-009
-- Status: REVIEW_READY
+- Status: DONE
 - Updated: 2026-10-29T16:25:49+03:00
 - Baseline HEAD: 5e80c0897d2cd6ea815f11196cb75bbfc88285bf
 
@@ -541,7 +541,7 @@ User reviews the checkpoint and, if accepted, stages and commits the IMP-003 fil
 ## TASK_ID: IMP-004
 
 - Source: `docs/bootstrap.md`, section 5.3, “IMP-004 — SCD2 route plan и route binding”; `docs/spec.md`, DEC-017, DEC-020, DEC-023, DEC-024 and AC-003
-- Status: REVIEW_READY
+- Status: DONE
 - Updated: 2026-10-29T16:41:03+03:00
 - Baseline HEAD: a09dd66314347ed1aa6963a95e40abe49d81ad3b
 
@@ -687,7 +687,7 @@ IMP-005 is complete and committed as `345be2c`; await separate authorization for
 ## TASK_ID: IMP-006
 
 - Source: `docs/bootstrap.md`, section 5.3, “IMP-006 — Gold aggregates и reconciliation”; `docs/spec.md`, DEC-013, DEC-026, AC-010 and AC-011
-- Status: REVIEW_READY
+- Status: DONE
 - Updated: 2026-10-29T17:57:07+03:00
 - Baseline HEAD: d1041724a6a9841968f991755985830f16b91bdb
 
@@ -759,7 +759,7 @@ User authorized staging and committing this reviewed checkpoint; no push or tran
 ## TASK_ID: IMP-007
 
 - Source: `docs/bootstrap.md`, section 5.3, “IMP-007 — acceptance workflow и evidence”; `docs/bootstrap.md`, section 6 acceptance sequence; `docs/spec.md`, AC-001 and AC-003–AC-012
-- Status: REVIEW_READY
+- Status: DONE
 - Updated: 2026-10-29T21:52:42+03:00
 - Baseline HEAD: 64b2eccdea748896c27d81cf1e800c4849f92ddf
 
