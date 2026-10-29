@@ -854,3 +854,39 @@ User authorized staging and committing this reviewed checkpoint; no push or tran
 
 ### Next action
 After the user-authorized checkpoint commit, await separate authorization for push or transition to another task.
+
+## TASK_ID: SE-AGENT-001
+
+- Source: `docs/bootstrap-schema-evolution.md` §5.1, “SE-AGENT-001 — сохранить текущие инструкции и ресурсы”
+- Status: REVIEW_READY
+- Updated: 2026-10-29T22:59:30+03:00
+- Baseline HEAD: 6d74963e098647c3191c039ffadc667cee020c9c
+
+### Progress
+- Implemented: confirmed that SE-AGENT-001 requires no project-code or agent-resource change; preserved `docs/spec.md`, prior `docs/status.md` task history, and the repository's existing resource layout. The only task diff is this required status section.
+- Remaining: none.
+
+### AC evidence
+| AC / ссылка на источник | Result | Проверка / evidence / причина |
+|---|---|---|
+| `docs/bootstrap-schema-evolution.md` §5.1 SE-AGENT-001, preserve current instructions and resources | PASS | fast: baseline HEAD remained `6d74963e098647c3191c039ffadc667cee020c9c`; `git diff --name-only` returned only `docs/status.md`, with no staged or untracked paths, so the approved specification, prior source files, and current resource files are unchanged. |
+| `docs/bootstrap-schema-evolution.md` §5.1 SE-AGENT-001, do not add agent resources or duplicate state files | PASS | fast: repository assertions confirmed no `AGENTS.md`, `.pi/settings.json`, `.pi-lens.json`, tracked `.pi/` path, new handoff/status file, or untracked path; `docs/status.md` remains the sole tracked status file and the exact task section occurs once. `git diff --check` exited 0. |
+
+### Issues
+#### SE-AGENT-001/B01
+- State: RESOLVED
+- Category: REVIEW
+- Affects: mandatory STATUS_RECORD and FRESH_READ_ONLY_REVIEW gates
+- Problem: after the successful first reviewer call, `Progress/Remaining` still described that completed review as pending; correcting Progress is outside the narrow post-review finalization exception.
+- Evidence: the first fresh reviewer returned `VERDICT OK` with no findings, while the reviewed section still contained `Remaining: independent fresh read-only review only`.
+- Unblock: set `Remaining` to `none`, validate the status/diff, and obtain one fresh targeted re-review of the corrected section.
+- Resolution: `Remaining` is `none`; `git diff --check` and the targeted status gate passed, and the second fresh read-only reviewer confirmed the corrected section, complete diff, unchanged AC evidence, and preserved prior sections with `VERDICT OK`.
+
+### Review
+- Verdict: OK
+- Calls: 2
+- Fix iterations: 1
+- Details: the first fresh read-only reviewer inspected the complete diff, source criterion, status evidence, forbidden-resource paths, and preservation of prior sections and returned `VERDICT OK` with no findings. After the B01 status correction, the second fresh targeted reviewer verified the corrected section and full diff, found no BLOCKER, DEFERRED, or IMPROVEMENT, and returned `VERDICT OK`.
+
+### Next action
+User reviews the checkpoint and, if accepted, stages and commits `docs/status.md`; no push or transition to another task is authorized.
