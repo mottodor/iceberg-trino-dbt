@@ -755,3 +755,102 @@ IMP-005 is complete and committed as `345be2c`; await separate authorization for
 
 ### Next action
 User authorized staging and committing this reviewed checkpoint; no push or transition to IMP-007 is authorized.
+
+## TASK_ID: IMP-007
+
+- Source: `docs/bootstrap.md`, section 5.3, “IMP-007 — acceptance workflow и evidence”; `docs/bootstrap.md`, section 6 acceptance sequence; `docs/spec.md`, AC-001 and AC-003–AC-012
+- Status: REVIEW_READY
+- Updated: 2026-10-29T21:52:42+03:00
+- Baseline HEAD: 64b2eccdea748896c27d81cf1e800c4849f92ddf
+
+### Progress
+- Implemented: added the isolated acceptance runner and ignore rules; targeted review fixes require explicit prefix ownership before cleanup, write PASS only after secret/manifest gates, atomically write summaries, and require exactly one intended negative failure. Focused failure-path mutations passed, and final run `imp007_final5` passed the complete baseline/negative/catalog/object/cleanup/secret workflow on the fixed code.
+- Remaining: none.
+
+### AC evidence
+| AC / ссылка на источник | Result | Проверка / evidence / причина |
+|---|---|---|
+| `docs/spec.md` AC-001 | PASS | fast/acceptance: fixed run scope assertion found no excluded technology paths; final diff is limited to `.gitignore`, `scripts/run_acceptance.py`, and this task section. |
+| `docs/spec.md` AC-003 | PASS | acceptance: final 128-node build passed; `baseline/route_binding.csv` maps P1→V1 and P2/P3/P4→V2 with promised timestamps, while interval/mapping tests passed in `run_results.json`. |
+| `docs/spec.md` AC-004 | PASS | acceptance: `baseline/layer_counts.csv` records Bronze 28, typed 28, canonical 27; `duplicate_reconciliation.csv` records P3-E02 as 2 Bronze rows, 1 payload, 1 canonical row. |
+| `docs/spec.md` AC-005 | PASS | acceptance: `p3_before.csv` and `p3_after.csv` preserve delivered/36h/on-time while visits/dwell/route ratio change `0/0h/1.0` → `2/3h/1.5`; P3 visits are B=2h and X=1h. |
+| `docs/spec.md` AC-006 | PASS | acceptance: `package_facts.csv` records P1 as 48h, zero delay, on-time, B dwell 4h, route ratio 1.0, deviation 0%; final contract tests passed. |
+| `docs/spec.md` AC-007 | PASS | acceptance: `package_facts.csv` records P2 as 48h, 12h delay, late, 16h completed dwell, route ratio 1.5, deviation 50%; hub aggregates record B/X/D=6/11/2h across V2 packages. |
+| `docs/spec.md` AC-008 | PASS | acceptance: `package_facts.csv` and `p4_open_visit.csv` record one active P4, current `arrived_at_hub`, open D visit with null departure/dwell, null final metrics, and current route ratio 0.75. |
+| `docs/spec.md` AC-009 | PASS | acceptance: baseline DQ tests passed; each isolated scenario exited 1 with exactly one result, exact intended unique ID, and `failures=1`. |
+| `docs/spec.md` AC-010 | PASS | acceptance: route aggregates are V1 `1/0/100%/0h/0%` and V2 `2/1/50%/6h/50%`; completed hub dwell is V1/B=4h and V2/B=6h, X=11h, D=2h. |
+| `docs/spec.md` AC-011 | PASS | acceptance: final build and CSV assertions record 28/27 Bronze/canonical events, 4 facts (3 completed/1 active), 7 visits (6 closed/1 open), and 2 independent S2 packages. |
+| `docs/spec.md` AC-012 | PASS | acceptance: fixed run `imp007_final5` exited 0 in 238.86 seconds; 128 dbt results were 15 success/113 pass, Trino listed 68 isolated tables, Polaris returned `lakehouse`, RustFS listed 388 task object paths, cleanup left zero task objects/containers and preserved the volume, secret scan was clean, and the manifest hashed 466 non-summary evidence files. |
+
+### Issues
+#### IMP-007/B01
+- State: RESOLVED
+- Category: TEST
+- Affects: mandatory fast-check and EVIDENCE_GATE
+- Problem: the first pure-helper validation harness failed while dynamically importing the acceptance module, so its helper assertions did not execute.
+- Evidence: Python exited 1 in `dataclasses` because the ad-hoc `importlib` harness did not register the module in `sys.modules`; the preceding AST, `--help`, invalid-run-id, and whitespace checks had passed.
+- Unblock: register the temporary module before `exec_module`, rerun the helper assertions, and preserve the unchanged implementation if they pass.
+- Resolution: the corrected harness registered the module, all helper assertions passed, and a mismatched staged P3 mutation raised the intended `AcceptanceError`; `git diff --check` also passed.
+
+#### IMP-007/B02
+- State: RESOLVED
+- Category: ENVIRONMENT
+- Affects: `docs/spec.md` AC-012 and mandatory acceptance EVIDENCE_GATE
+- Problem: the first full workflow run reached a Compose-healthy Trino container but its immediate `SELECT 1` readiness probe exited 1, so no business assertion ran.
+- Evidence: `docker compose up -d --wait` exited 0 in 45.471 seconds; `docker compose ps -a` recorded Trino healthy for only six seconds; the immediate query exited 1. The runner then executed `docker compose down`, left no project containers, preserved `iceberg-trino-dbt_rustfs-data`, and its secret scan found no credential value in evidence.
+- Unblock: make query readiness a bounded retry that records each failed stdout/stderr before retrying, avoid schema cleanup until Trino has accepted a query, and rerun with a fresh isolated run ID.
+- Resolution: the second run recorded attempt 1 as `Trino server is still initializing`, retried after two seconds, then saved the exact successful CSV rows `ready,1`; business assertions proceeded through the full baseline build.
+
+#### IMP-007/B03
+- State: RESOLVED
+- Category: TEST
+- Affects: `docs/spec.md` AC-010 and mandatory EVIDENCE_GATE
+- Problem: the route-aggregate evidence assertion compares floating-point CSV text exactly and rejects a numerically valid result within the specification tolerance.
+- Evidence: the final aggregate rows matched all expected counts/rates/delays, but Trino returned `50.000000000000014` instead of the string `50.0` for `R1-V2` average deviation; the runner stopped after 138.68 seconds and safely cleaned all task schemas/containers while preserving the volume.
+- Unblock: parse aggregate numeric fields and compare them with the approved 0.01 percentage-point tolerance, retain exact identifiers/counts, then rerun the full workflow with a fresh run ID.
+- Resolution: the tolerance-aware helper accepted the observed value, preserved exact version/count assertions, and rejected a `50.02` mutation outside the approved 0.01 percentage-point tolerance; `git diff --check` passed.
+
+#### IMP-007/B04
+- State: RESOLVED
+- Category: ENVIRONMENT
+- Affects: `docs/spec.md` AC-012 and mandatory acceptance EVIDENCE_GATE
+- Problem: the local Polaris management-catalog evidence request used host proxy settings and received HTTP 403 after every baseline and negative assertion had passed.
+- Evidence: the environment exposes HTTP/HTTPS proxy variables; the third run completed the 128-node build and saved all three exact intended DQ failures, then the localhost Polaris request returned `HTTP Error 403: Forbidden`. This matches the repository’s previously observed localhost proxy behavior. Cleanup removed all task schemas/containers and preserved the volume after 232.73 seconds.
+- Unblock: use a proxy-disabled urllib opener for localhost Polaris token/catalog requests, preserve secret scanning, and rerun with a fresh isolated run ID.
+- Resolution: run `imp007_final4` used a proxy-disabled opener, saved the expected `lakehouse` catalog/storage properties, passed object/catalog/secret gates, exited 0, and restored the initial environment.
+
+#### IMP-007/B05
+- State: RESOLVED
+- Category: CODE
+- Affects: mandatory safety boundary and acceptance cleanup gate
+- Problem: after query readiness, a detected pre-existing run-prefix schema still triggers unconditional failure cleanup, which can drop the pre-existing schema with `CASCADE`.
+- Evidence: the first fresh reviewer traced `assert_prefixes_absent()` raising after `query_ready=True`, followed by the `finally` branch calling `cleanup_task_data()` for every computed schema name.
+- Unblock: track explicit ownership only after the collision check succeeds, gate failure cleanup on that ownership flag, use exact schema-name matching, and prove a collision remains intact after the runner refuses.
+- Resolution: cleanup now requires `prefixes_owned=True`, set only after an exact `IN (...)` collision query passes. A synthetic collision propagated the refusal with zero cleanup calls; a failure after ownership produced exactly one cleanup call.
+
+#### IMP-007/B06
+- State: RESOLVED
+- Category: CODE
+- Affects: mandatory secret/evidence-manifest gates and no-false-PASS invariant
+- Problem: the runner writes `acceptance_summary.json` as PASS before secret scanning and manifest creation, so a later finalization error can leave a false PASS on disk.
+- Evidence: the first fresh reviewer traced PASS assignment/summary before `assert_no_secrets_in_evidence()` and `write_evidence_manifest()`; a secret finding or manifest write failure would return non-zero after the PASS summary was already saved.
+- Unblock: make finalization transactional enough that PASS is written only after all final gates succeed; any final gate error must leave a FAIL summary and best-effort manifest, then validate both success and injected failure paths.
+- Resolution: finalization now orders scan → manifest → atomic PASS summary. Injected secret-scan and first-manifest failures both returned errors, left `outcome=FAIL`, and created a best-effort manifest; the success-order assertion observed PASS only after both gates.
+
+#### IMP-007/B07
+- State: RESOLVED
+- Category: REVIEW
+- Affects: mandatory STATUS_RECORD and FRESH_READ_ONLY_REVIEW gates
+- Problem: after the successful second reviewer call, `Progress/Remaining` still described that completed re-review as pending; correcting Progress is outside the narrow post-review finalization exception.
+- Evidence: the second fresh reviewer returned `VERDICT: OK` with no findings, while the reviewed section still contained `Remaining: fresh read-only re-review only`.
+- Unblock: set `Remaining` to `none`, validate the status/diff, and obtain one fresh targeted re-review of the corrected section.
+- Resolution: `Remaining` is `none`; the unique-section/status assertion and `git diff --check` passed, and the third fresh targeted reviewer confirmed the corrected section with `VERDICT: OK`.
+
+### Review
+- Verdict: OK
+- Calls: 3
+- Fix iterations: 2
+- Details: the first fresh reviewer returned `VERDICT: BLOCK` for B05/B06. After targeted code fixes and final acceptance, the second fresh reviewer returned `VERDICT: OK` with no findings. The third fresh targeted reviewer verified the B07 status-only correction and unchanged implementation diff, found no issues, and returned `VERDICT: OK`.
+
+### Next action
+After the user-authorized checkpoint commit, await separate authorization for push or transition to another task.
