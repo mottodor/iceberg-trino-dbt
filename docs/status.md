@@ -473,3 +473,67 @@ User reviews the checkpoint and, if accepted, stages and commits `dbt/dbt_projec
 
 ### Next action
 User reviews the checkpoint and, if accepted, stages and commits the listed IMP-002 files; no push or next-task transition is authorized.
+
+## TASK_ID: IMP-003
+
+- Source: `docs/bootstrap.md`, section 5.3, “IMP-003 — canonical/typed Silver и DQ”; `docs/spec.md`, DEC-010, DEC-016, DEC-022, AC-004, AC-005 and AC-009
+- Status: REVIEW_READY
+- Updated: 2026-10-29T16:25:49+03:00
+- Baseline HEAD: 5e80c0897d2cd6ea815f11196cb75bbfc88285bf
+
+### Progress
+- Implemented: added typed raw Silver events with canonical departure normalization and normalized payload fingerprints, deterministic canonical events and package ordering, current package state, generic model constraints, three named DQ assertions, and a baseline Silver contract including typed/canonical counts. Final staged baseline regression proved duplicate canonicalization and late-event ordering; all baseline tests passed; the canonical/alias mutation passed all generic and sequence-DQ checks; an extra unrelated exact duplicate made the baseline contract fail as intended; all three required negative scenarios still produced their intended named failures. All task schemas, containers, network, and task-created volumes were removed; the three pre-existing volumes were preserved.
+- Remaining: none.
+
+### AC evidence
+| AC / ссылка на источник | Result | Проверка / evidence / причина |
+|---|---|---|
+| `docs/spec.md` AC-004, IMP-003 contribution | PASS | acceptance on final code: batch 1 produced 23 typed/23 canonical events; batch 2 produced exactly 28 typed/27 canonical. `P3-E02` had two raw rows and one canonical row; all 24 final baseline Silver tests passed. Adding an unrelated exact duplicate produced 29 typed/27 canonical rows and made only `assert_baseline_silver_contract` return `FAIL 1`. |
+| `docs/spec.md` AC-005, IMP-003 contribution | PASS | acceptance on final code: before and after batch 2, P3 remained `delivered` at `P3-E04`; final order was exactly `E01,E02,E05,E06,E07,E08,E03,E04`. The final baseline contract and direct staged assertions passed. |
+| `docs/spec.md` AC-009 | PASS | acceptance on final code: baseline DQ tests passed; an alias duplicate using `departed_hub` normalized both rows to `departed_at_hub`, produced one fingerprint, and passed all 23 generic/DQ tests. Isolated conflict, departure, and repeated-arrival scenarios each returned dbt exit 1 with only the intended named `FAIL 1`, and direct queries identified `P3-E02`, `P4-N01`, and `P4-N02` respectively. |
+
+### Issues
+#### IMP-003/B01
+- State: RESOLVED
+- Category: TEST
+- Affects: mandatory fast-check and EVIDENCE_GATE
+- Problem: the first exact dbt node-selection wrapper included generic tests selected indirectly from the three Silver models, so its expected seven-node assertion failed after parsing succeeded.
+- Evidence: `dbt parse` exited 0; `dbt ls` returned the seven intended models/singular tests plus 21 generic tests, and the wrapper exited 1 only on the exact output comparison.
+- Unblock: disable indirect generic-test selection or classify the machine-readable output, then rerun the exact Silver model/singular-test assertion.
+- Resolution: final `dbt parse` exited 0; `dbt ls --indirect-selection empty` returned exactly the three Silver models and four named singular tests, and the exact-set assertion passed.
+
+#### IMP-003/B02
+- State: RESOLVED
+- Category: CODE
+- Affects: `docs/bootstrap.md` §4.3 event-type normalization and mandatory FRESH_READ_ONLY_REVIEW gate
+- Problem: Silver passes through `departed_hub` unchanged and fingerprints the raw alias, although the approved bootstrap contract requires both departure spellings to normalize to `departed_at_hub` before downstream DQ logic.
+- Evidence: the first fresh reviewer identified that the typed model copies `event_type` directly, the accepted-values test rejects `departed_hub`, and both sequence tests ignore it; fixtures use only the canonical spelling, so prior acceptance did not exercise the alias.
+- Unblock: normalize both spellings in the typed model and fingerprint, then prove an isolated alias mutation passes generic and sequence-DQ checks.
+- Resolution: the typed model now normalizes both spellings before output and fingerprinting. An isolated semantic duplicate with `departed_hub` produced two canonical typed spellings, one fingerprint, one canonical event with raw count 2, and all 23 generic/DQ tests passed.
+
+#### IMP-003/B03
+- State: RESOLVED
+- Category: TEST
+- Affects: AC-004 evidence and mandatory EVIDENCE_GATE
+- Problem: the checked-in baseline Silver contract does not assert the proven 28 typed-row count, allowing an unrelated extra exact duplicate to leave all current tests green.
+- Evidence: the first fresh reviewer showed that canonical count, P3 duplicate count, ordering, current states, fingerprint conflict, and generic uniqueness can all remain green if a new unique fixture row exactly duplicates another non-P3 event.
+- Unblock: assert exactly 28 typed baseline rows and run a mutation with an extra exact duplicate that must make `assert_baseline_silver_contract` fail.
+- Resolution: the contract now asserts exactly 28 typed rows. An isolated exact duplicate of `P1-E01` yielded 29 typed/27 canonical rows and made the named baseline contract return `FAIL 1` with dbt exit 1.
+
+#### IMP-003/B04
+- State: RESOLVED
+- Category: REVIEW
+- Affects: mandatory STATUS_RECORD and FRESH_READ_ONLY_REVIEW gates
+- Problem: after the successful second reviewer call, `Progress/Remaining` still described that completed re-review as pending; correcting Progress is outside the narrow post-review finalization exception.
+- Evidence: the second fresh reviewer returned `VERDICT OK` with no findings, while the reviewed section still contained `Remaining: fresh read-only re-review only`.
+- Unblock: set `Remaining` to `none`, validate the status/diff, and obtain one fresh targeted re-review of the corrected section.
+- Resolution: `Remaining` is `none`; `git diff --check` passed, and the third fresh reviewer confirmed the corrected status section, complete diff, evidence, counters, and unchanged prior task sections with `VERDICT OK`.
+
+### Review
+- Verdict: OK
+- Calls: 3
+- Fix iterations: 2
+- Details: the first fresh reviewer returned `VERDICT BLOCK` for B02/B03. The second fresh reviewer confirmed the targeted code/test fixes and final evidence with `VERDICT OK`. After the status-only B04 correction, the third fresh targeted reviewer verified the complete diff, corrected section, counters, evidence, and unchanged prior task sections; it found no BLOCKER, DEFERRED, or IMPROVEMENT and returned `VERDICT OK`.
+
+### Next action
+User reviews the checkpoint and, if accepted, stages and commits the IMP-003 files plus `docs/status.md`; no push or transition to another task is authorized.

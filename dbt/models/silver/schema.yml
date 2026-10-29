@@ -1,0 +1,64 @@
+version: 2
+
+models:
+  - name: silver_tracking_events_typed
+    description: Typed immutable event rows with a deterministic business-payload fingerprint.
+    columns:
+      - name: fixture_row_id
+        data_tests: [not_null, unique]
+      - name: event_id
+        data_tests: [not_null]
+      - name: package_id
+        data_tests: [not_null]
+      - name: event_type
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values:
+                  - created
+                  - picked_up
+                  - arrived_at_hub
+                  - departed_at_hub
+                  - out_for_delivery
+                  - delivered
+      - name: event_at
+        data_tests: [not_null]
+      - name: received_at
+        data_tests: [not_null]
+      - name: event_payload_fingerprint
+        data_tests: [not_null]
+
+  - name: silver_tracking_events
+    description: One deterministic canonical row per event_id, ordered by business time.
+    columns:
+      - name: event_id
+        data_tests: [not_null, unique]
+      - name: package_id
+        data_tests: [not_null]
+      - name: package_event_seq
+        data_tests: [not_null]
+      - name: raw_event_row_count
+        data_tests: [not_null]
+
+  - name: silver_package_current_state
+    description: Current typed package state from the latest canonical business event.
+    columns:
+      - name: package_id
+        data_tests: [not_null, unique]
+      - name: current_event_id
+        data_tests: [not_null]
+      - name: current_status
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values:
+                  - created
+                  - picked_up
+                  - arrived_at_hub
+                  - departed_at_hub
+                  - out_for_delivery
+                  - delivered
+      - name: current_event_at
+        data_tests: [not_null]
