@@ -195,3 +195,85 @@ User authorized staging and committing this reviewed checkpoint; no push or tran
 
 ### Next action
 User reviews the checkpoint and, if accepted, stages and commits `compose.yaml` and `docs/status.md`; no push or next-task transition is authorized.
+
+## TASK_ID: BOOT-ENV-002
+
+- Source: `docs/bootstrap.md`, section 5.2, “BOOT-ENV-002 — конфигурация Trino/Polaris/RustFS”
+- Status: REVIEW_READY
+- Updated: 2026-10-29T13:05:38+03:00
+- Baseline HEAD: 540fc19b1f77b3e34c3a9877345e87615a5be948
+
+### Progress
+- Implemented: added project-scoped RustFS bucket and Polaris catalog bootstrap scripts, pinned one-shot setup services, the Trino Iceberg REST/OAuth2/vended-credentials catalog, catalog-level purge support, and the dbt catalog default; a fresh stack started healthy, two consecutive dbt table materializations and the singular test passed, Trino/Polaris/RustFS listings matched, and task objects/containers/network were removed while named volumes were preserved.
+- Remaining: none.
+
+### AC evidence
+| AC / ссылка на источник | Result | Проверка / evidence / причина |
+|---|---|---|
+| `docs/bootstrap.md` §5.2 BOOT-ENV-002, required configuration/bootstrap assets | PASS | fast: shell syntax, `docker compose --profile tools config --quiet`, rendered service/dependency/resource/image assertions, and exact Trino property assertions passed; removing the vended-credentials property made the mutation assertion fail as intended. |
+| `docs/bootstrap.md` §5.2 BOOT-ENV-002, REST catalog, OAuth2, vended credentials, and S3-compatible path-style access | PASS | acceptance: the fresh stack became healthy in 37 seconds; Polaris stored the exact S3 endpoint/path-style and `polaris.config.drop-with-purge.enabled=true` catalog properties; two consecutive dbt table runs exited 0 with one row, and the singular test passed. The pre-fix second-run HTTP 403 proved the purge assertion detects the missing catalog property. |
+| `docs/bootstrap.md` §5.2 BOOT-ENV-002, PROBE-001 plus catalog/schema/table and object listing | PASS | acceptance: Trino listed `lakehouse`, schema `boot_env_002`, table `probe002_smoke`, and one exact row; Polaris management returned the expected catalog/storage properties; RustFS listed only project bucket `iceberg-trino-dbt` with five final Iceberg data/metadata objects (14,873 bytes) under the task schema prefix. Cleanup dropped the schema, removed that prefix, stopped project services, and preserved all three named RustFS volumes. |
+
+### Issues
+#### BOOT-ENV-002/B01
+- State: RESOLVED
+- Category: TEST
+- Affects: mandatory fast-check and EVIDENCE_GATE
+- Problem: the first rendered-Compose assertion looked for resource limits under a nonexistent `deploy.resources` key, so the complete static gate did not finish.
+- Evidence: the assertion command exited 1 at service `rustfs`; inspection showed Compose renders the configured limits as top-level `cpus` and `mem_limit` fields for all six services.
+- Unblock: correct the assertion to inspect the rendered top-level fields and rerun the full static gate.
+- Resolution: the corrected assertion checked top-level `cpus` and `mem_limit`; the complete static and vended-credentials mutation gates exited 0.
+
+#### BOOT-ENV-002/B02
+- State: RESOLVED
+- Category: TEST
+- Affects: runtime acceptance evidence collection
+- Problem: the combined stack-start wrapper reached a healthy stack but exited non-zero because its Python post-inspection one-liner had invalid quoting.
+- Evidence: `docker compose up -d --wait --wait-timeout 240 rustfs polaris trino` completed in 45 seconds with all dependencies healthy/completed, then the inspection one-liner raised `SyntaxError`; direct follow-up showed RustFS, Polaris, and Trino healthy and both setup jobs exited 0.
+- Unblock: run a correctly quoted state assertion before continuing acceptance checks.
+- Resolution: a file-based JSON assertion verified the three runtime services are running/healthy and both setup jobs exited 0.
+
+#### BOOT-ENV-002/B03
+- State: RESOLVED
+- Category: TEST
+- Affects: repeated dbt table materialization acceptance assertion
+- Problem: the first Compose run passed an extra `dbt` token to an image whose entrypoint is already `dbt`, so the model did not execute.
+- Evidence: the cached image build completed, then dbt exited 2 with `No such command 'dbt'`.
+- Unblock: invoke the service as `... dbt run ...` without the duplicate executable token and rerun the materialization assertion.
+- Resolution: the corrected invocation created the one-row model; after the catalog-property fix, two consecutive corrected runs and the named singular test all exited 0.
+
+#### BOOT-ENV-002/B04
+- State: RESOLVED
+- Category: CODE
+- Affects: REST catalog configuration and repeated table materialization acceptance assertion
+- Problem: purge support was supplied as a Polaris process environment key, but Polaris 1.8.0 requires `polaris.config.drop-with-purge.enabled` in the catalog properties (or the separate server option `DROP_WITH_PURGE_ENABLED`).
+- Evidence: the first dbt run created the table; the second exited 1 with `Failed to drop table 'probe002_smoke__dbt_backup'`; Polaris returned HTTP 403 and explicitly requested the catalog property or server option, while container inspection confirmed the ineffective dotted environment key was present.
+- Unblock: move the flag into the catalog creation payload, recreate only the task-owned in-memory catalog/container state, and rerun two consecutive materializations plus the test.
+- Resolution: the bootstrap payload now stores the catalog property; a fresh catalog exposed it through the management API, and two consecutive dbt table materializations plus cleanup purge all exited 0.
+
+#### BOOT-ENV-002/B05
+- State: RESOLVED
+- Category: TEST
+- Affects: final Trino row and catalog/object listing evidence
+- Problem: the listing wrapper made incorrect assumptions about smoke output formatting and the physical Iceberg path after dbt's rename-based table materialization.
+- Evidence: after correcting the column name and quoted boolean, Trino and Polaris assertions passed; the RustFS assertion then rejected the valid `probe002_smoke__dbt_tmp-<uuid>` physical location retained after the logical table rename.
+- Unblock: assert the task schema prefix plus required data/metadata object types without requiring the logical final table name in the physical UUID directory.
+- Resolution: the corrected object assertion accepted the rename-derived physical directory while requiring the task prefix and Parquet, metadata JSON, and Avro objects; it passed with five objects totaling 14,873 bytes.
+
+#### BOOT-ENV-002/B06
+- State: RESOLVED
+- Category: TEST
+- Affects: mandatory runtime cleanup and environment restoration
+- Problem: the cleanup wrapper stopped after the successful schema drop because AWS CLI returned non-zero for an empty prefix listing, before `docker compose down` ran.
+- Evidence: Trino no longer listed `boot_env_002` and the captured object listing was empty, but the project containers remained running because the wrapper exited 1 before teardown.
+- Unblock: treat the expected empty-prefix listing as success, complete Compose teardown, and assert the named volumes are preserved.
+- Resolution: the corrected wrapper accepted the empty prefix, `docker compose down` removed only task project containers/network in 4 seconds, and the default plus both probe RustFS volumes remain present.
+
+### Review
+- Verdict: OK
+- Calls: 1
+- Fix iterations: 0
+- Details: one fresh read-only reviewer inspected the complete tracked/untracked diff, all three new infrastructure files, source contracts, final runtime/listing/cleanup evidence, the BOOT-ENV-002 status section, and unchanged prior task sections; it found no BLOCKER or DEFERRED and returned `VERDICT OK`. IMPROVEMENT: on a reused nonconforming existing `lakehouse` catalog, the bootstrap currently accepts HTTP 200 without revalidating all mandatory catalog/storage properties; the reviewer confirmed this does not block the clean-stack acceptance proven for this task.
+
+### Next action
+User reviews the checkpoint and, if accepted, stages and commits `compose.yaml`, `infra/rustfs/create-bucket.sh`, `infra/polaris/bootstrap.sh`, `infra/trino/catalog/lakehouse.properties`, and `docs/status.md`; no push or next-task transition is authorized.
