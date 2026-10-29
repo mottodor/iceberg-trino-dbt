@@ -537,3 +537,56 @@ User reviews the checkpoint and, if accepted, stages and commits the listed IMP-
 
 ### Next action
 User reviews the checkpoint and, if accepted, stages and commits the IMP-003 files plus `docs/status.md`; no push or transition to another task is authorized.
+
+## TASK_ID: IMP-004
+
+- Source: `docs/bootstrap.md`, section 5.3, “IMP-004 — SCD2 route plan и route binding”; `docs/spec.md`, DEC-017, DEC-020, DEC-023, DEC-024 and AC-003
+- Status: REVIEW_READY
+- Updated: 2026-10-29T16:41:03+03:00
+- Baseline HEAD: a09dd66314347ed1aa6963a95e40abe49d81ad3b
+
+### Progress
+- Implemented: added typed checkpoint segments with geodesic distances, derived SCD2 route-version intervals/current marker, package binding by pickup time with promised timestamps, model constraints, and baseline/no-overlap assertions. Final parse/selection and whitespace checks passed; the baseline build passed 81/81 nodes; direct queries returned the exact two versions, four bindings, promised timestamps, and equal 222390.20235496786-metre planned distances; the isolated overlap mutation failed only the intended test. Both task prefixes and all six schemas were removed, the initially stopped Compose stack was restored, and all three pre-existing named volumes were preserved.
+- Remaining: none.
+
+### AC evidence
+| AC / ссылка на источник | Result | Проверка / evidence / причина |
+|---|---|---|
+| `docs/spec.md` AC-003; `docs/bootstrap.md` §5.3 IMP-004 | PASS | acceptance: the baseline `dbt build --select tag:bronze tag:silver` passed 81/81 nodes. Direct Trino assertions returned `P1→R1-V1`, `P2/P3/P4→R1-V2`, promised timestamps `2025-01-12T08:00Z`, `2025-02-11T20:00Z`, `2025-02-11T21:00Z`, and `2025-02-13T20:00Z`; both versions had planned distance `222390.20235496786` metres and the expected closed/current intervals. A duplicate-effective-time mutation made only `assert_route_plan_version_intervals` fail with one row. |
+
+### Issues
+#### IMP-004/B01
+- State: RESOLVED
+- Category: ENVIRONMENT
+- Affects: `docs/spec.md` AC-003 runtime evidence
+- Problem: the first Compose preflight could not render because the required local training credentials were absent from the shell environment.
+- Evidence: `docker compose --profile tools config --quiet` exited 1 and named only the four required unset variables; no service was started.
+- Unblock: supply temporary non-production local values for the four required variables and rerun config/port preflight before starting the task stack.
+- Resolution: the same config/port preflight exited 0 with temporary non-production local values, and all four project ports were free.
+
+#### IMP-004/B02
+- State: RESOLVED
+- Category: TEST
+- Affects: mandatory EVIDENCE_GATE negative assertion
+- Problem: the first overlap mutation run produced the intended `FAIL 1 assert_route_plan_version_intervals` but also selected two unrelated Bronze contract tests whose other referenced models were absent.
+- Evidence: dbt exited 1 with the intended one-row interval failure plus two `TABLE_NOT_FOUND` errors for unbuilt Bronze package tables, so the run is not an unambiguous negative proof.
+- Unblock: materialize the complete required Bronze parents with `dbt run`, then invoke only the named interval test with indirect selection disabled and require it to be the sole failure.
+- Resolution: after materializing all required parents, an isolated one-test run exited 1 with exactly `FAIL 1 assert_route_plan_version_intervals`, `ERROR=1`, `TOTAL=1`, and no unrelated database error.
+
+#### IMP-004/B03
+- State: RESOLVED
+- Category: TEST
+- Affects: mandatory runtime cleanup and environment restoration
+- Problem: schema drops succeeded, but the cleanup wrapper treated an empty object prefix as an AWS CLI `length(null)` error and stopped before Compose teardown.
+- Evidence: all six task schemas returned `DROP SCHEMA`; the first post-drop object query exited 255 because `Contents` was absent, and the three project runtime containers remained healthy/running until the corrected check.
+- Unblock: count missing `Contents` as zero, verify both task prefixes are empty, run `docker compose down`, and assert the three pre-existing named volumes remain.
+- Resolution: null-safe JSON counting confirmed zero schemas and zero objects under both task prefixes; `docker compose down` restored the initially stopped state and all three pre-existing named volumes remained.
+
+### Review
+- Verdict: OK
+- Calls: 1
+- Fix iterations: 0
+- Details: one fresh read-only reviewer inspected the complete tracked/untracked diff, source contracts, implementation, tests, final runtime/mutation/cleanup evidence, the IMP-004 status section, and unchanged prior task sections; it found no BLOCKER or DEFERRED and returned `VERDICT OK`. IMPROVEMENT: add exact six-checkpoint tuple coverage plus `(route_version_id, checkpoint_seq)` duplicate detection in a future hardening change; the reviewer confirmed the checked-in fixtures and current AC-003 evidence are correct, so this is non-blocking.
+
+### Next action
+User reviews the checkpoint and, if accepted, stages and commits the IMP-004 files plus `docs/status.md`; no push or transition to another task is authorized.

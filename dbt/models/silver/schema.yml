@@ -62,3 +62,64 @@ models:
                   - delivered
       - name: current_event_at
         data_tests: [not_null]
+
+  - name: silver_route_plan_checkpoint_segments
+    description: Typed route checkpoints with great-circle distance from the previous planned point.
+    columns:
+      - name: checkpoint_fixture_row_id
+        data_tests: [not_null, unique]
+      - name: route_version_id
+        data_tests: [not_null]
+      - name: checkpoint_seq
+        data_tests: [not_null]
+      - name: hub_code
+        data_tests: [not_null]
+      - name: longitude
+        data_tests: [not_null]
+      - name: latitude
+        data_tests: [not_null]
+
+  - name: silver_route_plan_versions
+    description: SCD2 route-plan versions with derived validity intervals and planned distance.
+    columns:
+      - name: route_version_id
+        data_tests: [not_null, unique]
+      - name: route_id
+        data_tests: [not_null]
+      - name: valid_from
+        data_tests: [not_null]
+      - name: is_current
+        data_tests: [not_null]
+      - name: planned_duration_hours
+        data_tests: [not_null]
+      - name: sla_duration_hours
+        data_tests: [not_null]
+      - name: checkpoint_count
+        data_tests: [not_null]
+      - name: segment_count
+        data_tests: [not_null]
+      - name: planned_distance_meters
+        data_tests: [not_null]
+
+  - name: silver_package_route_binding
+    description: One picked-up package row bound to the SCD2 route version effective at pickup time.
+    columns:
+      - name: package_id
+        data_tests: [not_null, unique]
+      - name: shipment_id
+        data_tests: [not_null]
+      - name: route_id
+        data_tests: [not_null]
+      - name: picked_up_at
+        data_tests: [not_null]
+      - name: route_version_id
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('silver_route_plan_versions')
+                field: route_version_id
+      - name: planned_distance_meters
+        data_tests: [not_null]
+      - name: promised_delivery_at
+        data_tests: [not_null]
