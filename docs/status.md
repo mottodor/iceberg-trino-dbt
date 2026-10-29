@@ -1008,3 +1008,48 @@ User reviews the checkpoint and, if accepted, stages and commits `scripts/run_sc
 
 ### Next action
 User reviews the checkpoint and, if accepted, stages and commits `scripts/run_schema_evolution_acceptance.py` and `docs/status.md`; no push or transition to SE-IMP-003 is authorized.
+
+## TASK_ID: SE-IMP-003
+
+- Source: `docs/bootstrap-schema-evolution.md` §5.3, “SE-IMP-003 — metadata-only DDL checkpoints”; `docs/spec.md` AC-015 and AC-020
+- Status: REVIEW_READY
+- Updated: 2026-10-30T00:08:59+03:00
+- Baseline HEAD: 337f51d13619069710d270dc165c57be8980ab0f
+
+### Progress
+- Implemented: added the three ordered DDL operations, per-checkpoint schema/snapshot/file/object/metadata capture, field-ID and schema-ID assertions, nullable new-field validation, data-file digest comparison, and the next-slice incomplete gate. Final isolated run `seimp003_ddl2` passed AC-013–AC-015, preserved the single S0 snapshot and Parquet identity through schema IDs 1–3, completed core regression, and cleaned all task-owned runtime resources.
+- Remaining: none.
+
+### AC evidence
+| AC / ссылка на источник | Result | Проверка / evidence / причина |
+|---|---|---|
+| `docs/spec.md` AC-015; `docs/bootstrap-schema-evolution.md` §5.3 SE-IMP-003 | PASS | acceptance on final code: run `seimp003_ddl2` executed rename, INTEGER→BIGINT widening and nullable `delivery_priority` add-after in order. Schema IDs advanced 0→1→2→3 while the only data snapshot remained S0 `810038079541715347`; snapshot schema stayed 0. The same single-file identity (4 records, 1120 bytes, SHA-256 `2002cf3d707074934313dbe5a5f3dfe7012978e693a2683ce91b2530ade045a3`) persisted after every DDL. Field IDs 3 and 4 were preserved for rename/widen; the new nullable field received ID 7 and `last-column-id=7`. |
+| `docs/spec.md` AC-020, SE-IMP-003 contribution | PASS | fast/acceptance: LSP diagnostics, `py_compile`, CLI, metadata/file mutation probes and `git diff --check` passed. Final run recorded AC-013/014/015 PASS, intentionally left AC-016–AC-020 NOT_RUN with `continue with SE-IMP-004`, matched all nine pre/post core contracts, completed a clean secret scan and 675-file manifest, removed all task schemas/objects/containers/network, and preserved the pre-existing project volume. |
+
+### Issues
+#### SE-IMP-003/B01
+- State: RESOLVED
+- Category: TEST
+- Affects: `docs/spec.md` AC-015 and mandatory EVIDENCE_GATE
+- Problem: the first runtime checkpoint incorrectly required `$metadata_log_entries.latest_schema_id` to equal the metadata JSON `current-schema-id` after a schema-only DDL.
+- Evidence: run `seimp003_ddl` exited 1 after 190.45 seconds with `metadata log/schema JSON mismatch: 0 != 1`; the current metadata JSON correctly contained schema 1 after rename while the unchanged S0 snapshot still referenced schema 0. The runner removed all task schemas/objects/containers and preserved the three pre-existing volumes.
+- Unblock: assert that the metadata-log row remains tied to S0 schema 0 while separately validating the current metadata JSON schema ID, then rerun with a fresh isolated run ID.
+- Resolution: the assertion now requires the metadata-log snapshot schema to remain the original S0 schema while validating the current metadata JSON schema independently. The direct evidence probe confirmed snapshot schema 0/current schema 1 after rename, and fresh run `seimp003_ddl2` passed all three checkpoints with snapshot schema 0 and current schema IDs 1, 2 and 3.
+
+#### SE-IMP-003/B02
+- State: RESOLVED
+- Category: REVIEW
+- Affects: mandatory FRESH_READ_ONLY_REVIEW and STATUS_RECORD gates
+- Problem: after the second reviewer returned `VERDICT OK`, finalization changed `Progress/Remaining` from pending re-review to `none`, which is outside the narrow post-review finalization fields.
+- Evidence: the second reviewer reviewed the wording-corrected section while `Remaining` still named the pending re-review; the subsequent finalization changed that Progress field without a fresh review.
+- Unblock: keep `Remaining: none` as the accurate pre-review implementation state, validate the status/diff, and obtain one fresh targeted re-review of the complete final section.
+- Resolution: the third fresh targeted reviewer inspected the full current diff and complete pre-finalization section, explicitly confirmed `Status: IN_PROGRESS`, `Remaining: none`, AC evidence, B01/B02, review counters and unchanged prior sections, found no findings, and returned `VERDICT OK`.
+
+### Review
+- Verdict: OK
+- Calls: 3
+- Fix iterations: 2
+- Details: the first fresh read-only reviewer returned `VERDICT OK` with two non-blocking status wording improvements. The second fresh targeted reviewer verified those corrections and returned `VERDICT OK`. After B02 recorded the out-of-exception Progress finalization, the third fresh targeted reviewer inspected the complete final pre-finalization section, found no BLOCKER, DEFERRED or IMPROVEMENT, and returned `VERDICT OK`.
+
+### Next action
+User reviews the checkpoint and, if accepted, stages and commits `scripts/run_schema_evolution_acceptance.py` and `docs/status.md`; no push or transition to SE-IMP-004 is authorized.

@@ -57,6 +57,48 @@ S0_ICEBERG_TYPES = {
     "delivery_duration_hours": "double",
     "is_on_time": "boolean",
 }
+RENAMED_COLUMNS = [
+    ("package_id", "varchar"),
+    ("route_version_id", "varchar"),
+    ("current_status", "varchar"),
+    ("completed_visit_count", "integer"),
+    ("delivery_duration_hours", "double"),
+    ("is_on_time", "boolean"),
+]
+WIDENED_COLUMNS = [
+    (name, "bigint" if name == "completed_visit_count" else data_type)
+    for name, data_type in RENAMED_COLUMNS
+]
+EVOLVED_COLUMNS = [
+    ("package_id", "varchar"),
+    ("route_version_id", "varchar"),
+    ("delivery_priority", "varchar"),
+    ("current_status", "varchar"),
+    ("completed_visit_count", "bigint"),
+    ("delivery_duration_hours", "double"),
+    ("is_on_time", "boolean"),
+]
+RENAMED_ICEBERG_TYPES = {
+    "package_id": "string",
+    "route_version_id": "string",
+    "current_status": "string",
+    "completed_visit_count": "int",
+    "delivery_duration_hours": "double",
+    "is_on_time": "boolean",
+}
+WIDENED_ICEBERG_TYPES = {
+    **RENAMED_ICEBERG_TYPES,
+    "completed_visit_count": "long",
+}
+EVOLVED_ICEBERG_TYPES = {
+    "package_id": "string",
+    "route_version_id": "string",
+    "delivery_priority": "string",
+    "current_status": "string",
+    "completed_visit_count": "long",
+    "delivery_duration_hours": "double",
+    "is_on_time": "boolean",
+}
 
 
 def core_contract_mismatches(
@@ -106,13 +148,17 @@ def parse_s0_snapshot(rows: list[list[str]]) -> int:
     return parsed_snapshot_id
 
 
-def parse_s0_metadata(metadata: dict[str, Any], snapshot_id: int) -> dict[str, Any]:
-    """Validate the initial Iceberg metadata schema and return stable field evidence."""
+def parse_current_metadata(metadata: dict[str, Any], snapshot_id: int) -> dict[str, Any]:
+    """Return the current Iceberg schema identity after validating metadata shape."""
     current_schema_id = metadata.get("current-schema-id")
     current_snapshot_id = metadata.get("current-snapshot-id")
     last_column_id = metadata.get("last-column-id")
     schemas = metadata.get("schemas")
-    if not isinstance(current_schema_id, int) or not isinstance(schemas, list):
+    if (
+        not isinstance(current_schema_id, int)
+        or not isinstance(last_column_id, int)
+        or not isinstance(schemas, list)
+    ):
         raise AcceptanceError("metadata JSON lacks current schema information")
     if current_snapshot_id != snapshot_id:
         raise AcceptanceError(
@@ -129,11 +175,12 @@ def parse_s0_metadata(metadata: dict[str, Any], snapshot_id: int) -> dict[str, A
             f"expected one current Iceberg schema {current_schema_id}, got {len(current_schemas)}"
         )
     fields = current_schemas[0].get("fields")
-    if not isinstance(fields, list) or len(fields) != len(S0_COLUMNS):
-        raise AcceptanceError(f"unexpected S0 metadata fields: {fields}")
+    if not isinstance(fields, list) or not fields:
+        raise AcceptanceError(f"unexpected metadata fields: {fields}")
 
     field_ids: dict[str, int] = {}
     field_types: dict[str, str] = {}
+    field_required: dict[str, bool] = {}
     used_field_ids: set[int] = set()
     for field in fields:
         if not isinstance(field, dict):
@@ -141,35 +188,118 @@ def parse_s0_metadata(metadata: dict[str, Any], snapshot_id: int) -> dict[str, A
         name = field.get("name")
         field_id = field.get("id")
         field_type = field.get("type")
+        required = field.get("required")
         if (
             not isinstance(name, str)
             or not isinstance(field_id, int)
             or not isinstance(field_type, str)
+            or not isinstance(required, bool)
         ):
             raise AcceptanceError(f"invalid metadata field identity: {field}")
         if name in field_ids or field_id in used_field_ids or field_id <= 0:
             raise AcceptanceError(f"duplicate or invalid metadata field: {field}")
         field_ids[name] = field_id
         field_types[name] = field_type
+        field_required[name] = required
         used_field_ids.add(field_id)
 
-    expected_names = [name for name, _ in S0_COLUMNS]
-    if list(field_ids) != expected_names or field_types != S0_ICEBERG_TYPES:
+    if last_column_id < max(field_ids.values()):
         raise AcceptanceError(
-            f"unexpected S0 metadata schema: names={list(field_ids)}, types={field_types}"
+            f"last-column-id {last_column_id} is below fields {field_ids}"
         )
-    if last_column_id != max(field_ids.values()):
-        raise AcceptanceError(
-            f"last-column-id {last_column_id} does not match fields {field_ids}"
-        )
-
     return {
         "current_schema_id": current_schema_id,
         "current_snapshot_id": current_snapshot_id,
         "last_column_id": last_column_id,
         "field_ids": field_ids,
         "field_types": field_types,
+        "field_required": field_required,
     }
+
+
+def parse_s0_metadata(metadata: dict[str, Any], snapshot_id: int) -> dict[str, Any]:
+    """Validate the initial Iceberg metadata schema and return stable field evidence."""
+    summary = parse_current_metadata(metadata, snapshot_id)
+    field_ids = summary["field_ids"]
+    field_types = summary["field_types"]
+    expected_names = [name for name, _ in S0_COLUMNS]
+    if list(field_ids) != expected_names or field_types != S0_ICEBERG_TYPES:
+        raise AcceptanceError(
+            f"unexpected S0 metadata schema: names={list(field_ids)}, types={field_types}"
+        )
+    if summary["last_column_id"] != max(field_ids.values()):
+        raise AcceptanceError(
+            f"last-column-id {summary['last_column_id']} does not match fields {field_ids}"
+        )
+    return summary
+
+
+def parse_ddl_metadata(
+    metadata: dict[str, Any],
+    snapshot_id: int,
+    *,
+    expected_names: list[str],
+    expected_types: dict[str, str],
+    field_sources: dict[str, str | None],
+    s0_summary: dict[str, Any],
+    previous_schema_id: int,
+) -> dict[str, Any]:
+    """Validate one metadata-only DDL checkpoint against the S0 field identities."""
+    summary = parse_current_metadata(metadata, snapshot_id)
+    field_ids = summary["field_ids"]
+    field_types = summary["field_types"]
+    s0_field_ids = s0_summary["field_ids"]
+    s0_last_column_id = s0_summary["last_column_id"]
+    if list(field_ids) != expected_names or field_types != expected_types:
+        raise AcceptanceError(
+            f"unexpected evolved metadata schema: names={list(field_ids)}, types={field_types}"
+        )
+    if summary["current_schema_id"] in {
+        s0_summary["current_schema_id"],
+        previous_schema_id,
+    }:
+        raise AcceptanceError(
+            f"schema ID did not advance at DDL checkpoint: {summary['current_schema_id']}"
+        )
+
+    new_fields = []
+    for name in expected_names:
+        source_name = field_sources[name]
+        if source_name is None:
+            if field_ids[name] in set(s0_field_ids.values()) or field_ids[name] <= s0_last_column_id:
+                raise AcceptanceError(f"new field reused an S0 field ID: {name}={field_ids[name]}")
+            if summary["field_required"][name]:
+                raise AcceptanceError(f"new field is unexpectedly required: {name}")
+            new_fields.append(name)
+        elif field_ids[name] != s0_field_ids[source_name]:
+            raise AcceptanceError(
+                f"field ID changed for {name}: {field_ids[name]} != {s0_field_ids[source_name]}"
+            )
+
+    if new_fields:
+        if new_fields != ["delivery_priority"] or summary["last_column_id"] != field_ids[new_fields[0]]:
+            raise AcceptanceError(
+                f"unexpected new-field identity: fields={new_fields}, summary={summary}"
+            )
+    elif summary["last_column_id"] != s0_last_column_id:
+        raise AcceptanceError(
+            f"DDL without add changed last-column-id: {summary['last_column_id']}"
+        )
+    return summary
+
+
+def file_identity_mismatches(
+    expected: list[dict[str, Any]],
+    actual: list[dict[str, Any]],
+) -> list[str]:
+    """Return data-file paths whose size, record count, format, or digest changed."""
+    expected_by_path = {item.get("file_path"): item for item in expected}
+    actual_by_path = {item.get("file_path"): item for item in actual}
+    return sorted(
+        str(path)
+        for path in expected_by_path.keys() | actual_by_path.keys()
+        if expected_by_path.get(path) != actual_by_path.get(path)
+    )
 
 
 class SchemaEvolutionAcceptanceRun(AcceptanceRun):
@@ -301,16 +431,16 @@ class SchemaEvolutionAcceptanceRun(AcceptanceRun):
                         if self.ac_results[ac] == "PASS"
                     ],
                     "pending": pending,
-                    "next_task": "SE-IMP-003",
+                    "next_task": "SE-IMP-004",
                 },
             )
             raise AcceptanceError(
-                "schema-evolution exercise is incomplete after S0 capture; "
-                "continue with SE-IMP-003"
+                "schema-evolution exercise is incomplete after metadata-only DDL; "
+                "continue with SE-IMP-004"
             )
 
     def run_schema_evolution_steps(self) -> None:
-        """Create the isolated S0 table and capture its initial invariant bundle."""
+        """Create S0, then prove the ordered schema changes are metadata-only."""
         evolution_table = self.evolution_table_name()
         source_table = qualified(
             self.baseline_prefix,
@@ -337,6 +467,8 @@ class SchemaEvolutionAcceptanceRun(AcceptanceRun):
         )
         self.capture_s0_evidence()
         self.ac_results["AC-014"] = "PASS"
+        self.run_metadata_only_ddl_checkpoints()
+        self.ac_results["AC-015"] = "PASS"
 
     def evolution_table_name(self) -> str:
         return f'"{CATALOG}"."{self.evolution_schema}"."{EVOLUTION_TABLE}"'
@@ -544,6 +676,304 @@ class SchemaEvolutionAcceptanceRun(AcceptanceRun):
                 "metadata": metadata_summary,
             },
         )
+
+    def run_metadata_only_ddl_checkpoints(self) -> None:
+        evolution_table = self.evolution_table_name()
+        field_sources = {
+            "package_id": "package_id",
+            "route_version_id": "route_version_id",
+            "current_status": "delivery_status",
+            "completed_visit_count": "completed_visit_count",
+            "delivery_duration_hours": "delivery_duration_hours",
+            "is_on_time": "is_on_time",
+        }
+        checkpoints = [
+            (
+                "01_rename",
+                f"ALTER TABLE {evolution_table} RENAME COLUMN delivery_status TO current_status",
+                RENAMED_COLUMNS,
+                RENAMED_ICEBERG_TYPES,
+                field_sources,
+            ),
+            (
+                "02_widen",
+                f"ALTER TABLE {evolution_table} ALTER COLUMN completed_visit_count SET DATA TYPE BIGINT",
+                WIDENED_COLUMNS,
+                WIDENED_ICEBERG_TYPES,
+                field_sources,
+            ),
+            (
+                "03_add_priority",
+                f"ALTER TABLE {evolution_table} ADD COLUMN delivery_priority VARCHAR AFTER route_version_id",
+                EVOLVED_COLUMNS,
+                EVOLVED_ICEBERG_TYPES,
+                {
+                    "package_id": "package_id",
+                    "route_version_id": "route_version_id",
+                    "delivery_priority": None,
+                    "current_status": "delivery_status",
+                    "completed_visit_count": "completed_visit_count",
+                    "delivery_duration_hours": "delivery_duration_hours",
+                    "is_on_time": "is_on_time",
+                },
+            ),
+        ]
+        previous_schema_id = self.s0_metadata_summary["current_schema_id"]
+        previous_metadata_key = self.s0_metadata_summary["object_key"]
+        summaries = []
+        for checkpoint, sql, columns, iceberg_types, sources in checkpoints:
+            root = f"evolution/ddl/{checkpoint}"
+            self.execute_sql(f"{root}/alter.log", sql)
+            summary = self.capture_metadata_only_checkpoint(
+                root,
+                columns=columns,
+                iceberg_types=iceberg_types,
+                field_sources=sources,
+                previous_schema_id=previous_schema_id,
+                previous_metadata_key=previous_metadata_key,
+            )
+            summaries.append(summary)
+            previous_schema_id = summary["metadata"]["current_schema_id"]
+            previous_metadata_key = summary["metadata"]["object_key"]
+        self.write_json("evolution/ddl/checkpoints.json", summaries)
+
+    def capture_metadata_only_checkpoint(
+        self,
+        root: str,
+        *,
+        columns: list[tuple[str, str]],
+        iceberg_types: dict[str, str],
+        field_sources: dict[str, str | None],
+        previous_schema_id: int,
+        previous_metadata_key: str,
+    ) -> dict[str, Any]:
+        if self.s0_snapshot_id is None:
+            raise AcceptanceError("S0 snapshot is unavailable at DDL checkpoint")
+        evolution_table = self.evolution_table_name()
+        self.query_csv(f"{root}/describe.csv", f"DESCRIBE {evolution_table}")
+        actual_columns = self.query_csv(
+            f"{root}/columns.csv",
+            f"""
+            SELECT column_name, data_type, ordinal_position
+            FROM {CATALOG}.information_schema.columns
+            WHERE table_schema = '{self.evolution_schema}'
+              AND table_name = '{EVOLUTION_TABLE}'
+            ORDER BY ordinal_position
+            """,
+        )
+        expected_columns = [
+            ["column_name", "data_type", "ordinal_position"],
+            *[
+                [name, data_type, str(position)]
+                for position, (name, data_type) in enumerate(columns, start=1)
+            ],
+        ]
+        if actual_columns != expected_columns:
+            raise AcceptanceError(f"unexpected DDL checkpoint columns: {actual_columns}")
+
+        snapshots = self.query_csv(
+            f"{root}/snapshots.csv",
+            f"""
+            SELECT
+                CAST(snapshot_id AS varchar) AS snapshot_id,
+                COALESCE(CAST(parent_id AS varchar), '') AS parent_id,
+                operation
+            FROM {self.evolution_metadata_table('snapshots')}
+            ORDER BY committed_at, snapshot_id
+            """,
+        )
+        checkpoint_snapshot_id = parse_s0_snapshot(snapshots)
+        if checkpoint_snapshot_id != self.s0_snapshot_id:
+            raise AcceptanceError(
+                f"DDL changed current data snapshot: {checkpoint_snapshot_id} != {self.s0_snapshot_id}"
+            )
+
+        file_rows = self.query_csv(
+            f"{root}/files.csv",
+            f"""
+            SELECT
+                file_path,
+                file_format,
+                CAST(record_count AS varchar) AS record_count,
+                CAST(file_size_in_bytes AS varchar) AS file_size_in_bytes
+            FROM {self.evolution_metadata_table('files')}
+            ORDER BY file_path
+            """,
+        )
+        objects = self.list_objects(f"warehouse/{self.evolution_schema}/")
+        self.write_json(f"{root}/objects.json", objects)
+        object_rows = objects.get("Contents") or []
+        if not isinstance(object_rows, list) or not object_rows:
+            raise AcceptanceError(f"DDL checkpoint object listing is empty: {root}")
+        objects_by_key = {
+            item["Key"]: item
+            for item in object_rows
+            if isinstance(item, dict) and isinstance(item.get("Key"), str)
+        }
+        if len(objects_by_key) != len(object_rows):
+            raise AcceptanceError(f"invalid DDL checkpoint object listing: {root}")
+        self.write_csv(
+            f"{root}/objects.csv",
+            [
+                ["key", "size", "etag"],
+                *[
+                    [item["Key"], item.get("Size"), item.get("ETag")]
+                    for item in object_rows
+                ],
+            ],
+        )
+
+        expected_header = [
+            "file_path",
+            "file_format",
+            "record_count",
+            "file_size_in_bytes",
+        ]
+        if not file_rows or file_rows[0] != expected_header or len(file_rows) < 2:
+            raise AcceptanceError(f"DDL checkpoint has no data files: {file_rows}")
+        file_identities = []
+        for file_path, file_format, record_count, file_size in file_rows[1:]:
+            object_key = self.object_key(file_path)
+            object_row = objects_by_key.get(object_key)
+            try:
+                parsed_record_count = int(record_count)
+                parsed_file_size = int(file_size)
+                object_size = object_row.get("Size") if object_row is not None else None
+                if not isinstance(object_size, int):
+                    raise TypeError("object size is not an integer")
+            except (TypeError, ValueError) as error:
+                raise AcceptanceError(f"invalid DDL file metrics: {file_rows}") from error
+            if file_format.upper() != "PARQUET" or parsed_file_size != object_size:
+                raise AcceptanceError(f"invalid DDL data file mapping: {file_path}")
+            file_identities.append(
+                {
+                    "file_path": file_path,
+                    "object_key": object_key,
+                    "file_format": file_format.upper(),
+                    "record_count": parsed_record_count,
+                    "size": parsed_file_size,
+                    "sha256": self.object_sha256(object_key),
+                }
+            )
+        mismatches = file_identity_mismatches(self.s0_file_identities, file_identities)
+        if mismatches:
+            raise AcceptanceError(
+                "DDL rewrote or changed S0 data files: " + ", ".join(mismatches)
+            )
+        parquet_keys = sorted(
+            key for key in objects_by_key if key.lower().endswith(".parquet")
+        )
+        expected_parquet_keys = sorted(
+            item["object_key"] for item in self.s0_file_identities
+        )
+        if parquet_keys != expected_parquet_keys:
+            raise AcceptanceError(
+                f"DDL changed Parquet object set: {parquet_keys} != {expected_parquet_keys}"
+            )
+        self.write_json(f"{root}/file_identities.json", file_identities)
+
+        metadata_log = self.query_csv(
+            f"{root}/metadata_log_entries.csv",
+            f"""
+            SELECT
+                CAST(timestamp AS varchar) AS committed_at,
+                file,
+                CAST(latest_snapshot_id AS varchar) AS latest_snapshot_id,
+                CAST(latest_schema_id AS varchar) AS latest_schema_id,
+                CAST(latest_sequence_number AS varchar) AS latest_sequence_number
+            FROM {self.evolution_metadata_table('metadata_log_entries')}
+            ORDER BY timestamp, file
+            """,
+        )
+        latest_metadata = self.query_csv(
+            f"{root}/latest_metadata.csv",
+            f"""
+            SELECT
+                file,
+                CAST(latest_snapshot_id AS varchar) AS latest_snapshot_id,
+                CAST(latest_schema_id AS varchar) AS latest_schema_id
+            FROM {self.evolution_metadata_table('metadata_log_entries')}
+            ORDER BY timestamp DESC
+            LIMIT 1
+            """,
+        )
+        if (
+            not metadata_log
+            or metadata_log[0]
+            != [
+                "committed_at",
+                "file",
+                "latest_snapshot_id",
+                "latest_schema_id",
+                "latest_sequence_number",
+            ]
+            or len(latest_metadata) != 2
+            or latest_metadata[0]
+            != ["file", "latest_snapshot_id", "latest_schema_id"]
+        ):
+            raise AcceptanceError(f"invalid DDL metadata log evidence: {root}")
+        metadata_location, latest_snapshot_id, latest_schema_id = latest_metadata[1]
+        try:
+            parsed_latest_snapshot_id = int(latest_snapshot_id)
+            parsed_latest_schema_id = int(latest_schema_id)
+        except ValueError as error:
+            raise AcceptanceError(
+                f"invalid DDL metadata log IDs: {latest_metadata[1]}"
+            ) from error
+        if parsed_latest_snapshot_id != self.s0_snapshot_id:
+            raise AcceptanceError(
+                f"DDL metadata log changed snapshot: {latest_snapshot_id}"
+            )
+        metadata_key = self.object_key(metadata_location)
+        if metadata_key == previous_metadata_key or metadata_key not in objects_by_key:
+            raise AcceptanceError(
+                f"DDL did not create a new current metadata object: {metadata_key}"
+            )
+        metadata_text = self.read_object_text(metadata_key)
+        self.write_text(f"{root}/metadata.json", metadata_text)
+        try:
+            metadata = json.loads(metadata_text)
+        except json.JSONDecodeError as error:
+            raise AcceptanceError(f"invalid metadata JSON: {metadata_key}") from error
+        if not isinstance(metadata, dict):
+            raise AcceptanceError(f"invalid metadata JSON root: {metadata_key}")
+        metadata_summary = parse_ddl_metadata(
+            metadata,
+            self.s0_snapshot_id,
+            expected_names=[name for name, _ in columns],
+            expected_types=iceberg_types,
+            field_sources=field_sources,
+            s0_summary=self.s0_metadata_summary,
+            previous_schema_id=previous_schema_id,
+        )
+        if parsed_latest_schema_id != self.s0_metadata_summary["current_schema_id"]:
+            raise AcceptanceError(
+                f"S0 snapshot schema changed in metadata log: {latest_schema_id} != "
+                f"{self.s0_metadata_summary['current_schema_id']}"
+            )
+        metadata_summary.update(
+            {
+                "object_key": metadata_key,
+                "size": len(metadata_text.encode("utf-8")),
+                "sha256": hashlib.sha256(metadata_text.encode("utf-8")).hexdigest(),
+            }
+        )
+        self.write_json(f"{root}/metadata_summary.json", metadata_summary)
+        summary = {
+            "root": root,
+            "snapshot_id": self.s0_snapshot_id,
+            "columns": [
+                {"name": name, "type": data_type}
+                for name, data_type in columns
+            ],
+            "file_identities": file_identities,
+            "metadata": metadata_summary,
+            "snapshot_schema_id": parsed_latest_schema_id,
+            "object_count": len(object_rows),
+            "metadata_log_entry_count": len(metadata_log) - 1,
+        }
+        self.write_json(f"{root}/invariant_bundle.json", summary)
+        return summary
 
     def evolution_metadata_table(self, suffix: str) -> str:
         return (
