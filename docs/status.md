@@ -119,3 +119,33 @@ User authorized staging and committing this reviewed checkpoint; no push or tran
 
 ### Next action
 After committing this user-authorized reviewed checkpoint, await separate authorization for push or transition to another task.
+
+## TASK_ID: PROBE-003
+
+- Source: `docs/bootstrap.md`, section 4.4, “PROBE-003 — геодезические ожидания fixtures”; `docs/spec.md`, DEC-020 and DEC-024
+- Status: REVIEW_READY
+- Updated: 2026-10-29T12:11:56+03:00
+- Baseline HEAD: af47c524d9a8984eb401f4c5f84845f9145f43e9
+
+### Progress
+- Implemented: added a reusable dbt macro for Trino spherical-geography distance and a SQL-only singular test for both planned routes, the P2 actual route, metre units, and coordinate order; dbt parse/selection and the final Trino 484 test passed. Ratio and longitude/latitude mutations produced the intended named failure/error. The task-created Trino container and network were removed, no tables were created, and the pre-existing PROBE-001/002 volumes were preserved.
+- Remaining: none.
+
+### AC evidence
+| AC / ссылка на источник | Result | Проверка / evidence / причина |
+|---|---|---|
+| `docs/bootstrap.md` §4.4 PROBE-003, planned distances `A→B→C` and `A→D→C` differ by at most 1 metre | PASS | acceptance: Trino 484 returned `222390.20235496786` metres for both plans and a `0.0` metre difference; the final singular dbt test exited 0 with one PASS. |
+| `docs/bootstrap.md` §4.4 PROBE-003, P2 actual/planned ratio is `1.5` within 0.01 percentage point tolerance | PASS | acceptance: Trino 484 returned actual distance `333585.3035324518` metres, ratio `1.5`, and `150.0%`; changing the detour point in a temporary project made the named test return `FAIL 1` and dbt exit 1. |
+| `docs/bootstrap.md` §4.4 PROBE-003, no `NULL`, geography error, or longitude/latitude reversal | PASS | acceptance: the final test exited 0; the asymmetric sentinel returned `109505.75582500256` metres. Swapping longitude/latitude in a temporary macro made the named test error with Trino `INVALID_FUNCTION_ARGUMENT: Latitude must be between -90 and 90`, and the wrapper confirmed exit 1. |
+
+### Issues
+none
+
+### Review
+- Verdict: OK
+- Calls: 1
+- Fix iterations: 0
+- Details: one fresh read-only reviewer inspected the complete tracked/untracked diff, source contracts, macro, singular test, runtime and mutation evidence, status consistency, and unchanged PROBE-001/002 sections; it found no BLOCKER, DEFERRED, or IMPROVEMENT and returned `VERDICT OK`.
+
+### Next action
+User authorized staging and committing this reviewed checkpoint; no push or transition to another task is authorized.
