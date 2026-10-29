@@ -590,3 +590,96 @@ User reviews the checkpoint and, if accepted, stages and commits the IMP-003 fil
 
 ### Next action
 User reviews the checkpoint and, if accepted, stages and commits the IMP-004 files plus `docs/status.md`; no push or transition to another task is authorized.
+
+## TASK_ID: IMP-005
+
+- Source: `docs/bootstrap.md`, section 5.3, “IMP-005 — hub visits и Gold facts”; `docs/spec.md`, DEC-011–DEC-015, DEC-021, DEC-022, DEC-026 and AC-005–AC-008, AC-011
+- Status: REVIEW_READY
+- Updated: 2026-10-29T17:07:46+03:00
+- Baseline HEAD: ab4cbf0c8c744fb57b6585f134c1c672808e2101
+
+### Progress
+- Implemented: added strict hub-visit pairing, the package accumulating snapshot with SLA/distance/dwell metrics, model constraints, and baseline Gold contract assertions. Fast parse/selection passed; batch 1 proved P3 remained delivered/on-time with 36-hour duration, zero visits, and 100% route ratio; after batch 2 the full 107-node build passed, exact rows showed four package facts and seven visits with the specified P1–P4 metrics, and a duplicate-open-visit mutation made only the named Gold visit contract fail before final restoration and 24/24 Gold tests passed. The final package-route implementation includes every canonical coordinate event. After reviewer feedback, the package contract now rejects NULL completed deviation metrics, validates P2/P3 absolute deviation metres, and has an explicit dbt dependency hint; a P2 NULL-deviation mutation produced the sole intended `FAIL 1`, final 16/16 affected tests passed, completed deviation fields were non-null with 0/50/50%, and the task schemas/objects were removed again.
+- Remaining: none.
+
+### AC evidence
+| AC / ссылка на источник | Result | Проверка / evidence / причина |
+|---|---|---|
+| `docs/spec.md` AC-005 | PASS | acceptance: before batch 2 P3 was delivered/on-time with 36-hour duration, zero visits/dwell, and route ratio 1.0; after batch 2 the final Gold contracts passed with B=2h, X=1h, unchanged delivery metrics, and route ratio 1.5. |
+| `docs/spec.md` AC-006 | PASS | acceptance: the final package/visit contracts and direct rows showed P1 duration 48h, delay 0, on-time=true, B dwell 4h, route ratio 1.0, and non-null deviation 0%; the final affected test suite passed after the reviewer fix. |
+| `docs/spec.md` AC-007 | PASS | acceptance: the final package/visit contracts and direct rows showed P2 duration 48h, delay 12h, on-time=false, dwell B/X/D=4/10/2h, total 16h, route ratio 1.5, and non-null deviation 50% within tolerance. A P2 NULL-deviation mutation made only the named package contract fail with `FAIL 1`; restoration passed 16/16 tests. |
+| `docs/spec.md` AC-008 | PASS | acceptance: the final contracts showed one P4 fact in `arrived_at_hub`, one open D visit with null departure/dwell, null final delivery metrics/deviation, and non-null current distance at 75% of plan. |
+| `docs/spec.md` AC-011, IMP-005 contribution | PASS | acceptance: the final build and direct assertions showed 4 package facts (3 completed, 1 active), 7 hub visits (6 closed, 1 open), and exactly two independent S2 package rows; final affected Gold tests passed 24/24 and then 16/16 after the route-point hardening change. |
+
+### Issues
+#### IMP-005/B01
+- State: RESOLVED
+- Category: TEST
+- Affects: `docs/spec.md` AC-005 staged before/after evidence
+- Problem: the first stage-1 wrapper rejected the correct zero P3 visit count because Trino CSV output quoted the scalar value.
+- Evidence: the Gold row returned `P3, delivered, 36.0, true, 0, 0.0, 1.0`; the visit query returned `"0"`, and the Python wrapper exited 1 only because it compared that quoted CSV token to unquoted `0`.
+- Unblock: parse the scalar as CSV, rerun the stage-1 assertion, and then continue with batch 2.
+- Resolution: the corrected wrapper parsed both results as CSV and passed, confirming delivered state, 36-hour duration, on-time=true, zero visits/dwell, and route ratio 1.0 before batch 2.
+
+#### IMP-005/B02
+- State: RESOLVED
+- Category: TEST
+- Affects: final catalog/object evidence and mandatory cleanup
+- Problem: the first catalog-listing wrapper expected 14 task tables, but the valid listing contains 18 tables across fixtures, Bronze, Silver, and Gold.
+- Evidence: Trino listed the exact four task schemas and 18 tables, including both Gold models; the wrapper exited 1 only at its incorrect `len(tables) == 14` assertion before evaluating the object count.
+- Unblock: align the expected count to the observed layer composition, rerun catalog/object assertions, then remove only the task schemas and restore the initially stopped Compose state.
+- Resolution: the corrected assertion passed with four schemas, 18 tables, and 99 task-prefix objects; cleanup then removed all four schemas and all task-prefix objects, restored the initially stopped Compose state, and preserved the three pre-existing named volumes.
+
+#### IMP-005/B03
+- State: RESOLVED
+- Category: TEST
+- Affects: mandatory FINAL_EVIDENCE_AND_DIFF_GATE
+- Problem: the first final status wrapper searched for an unqualified AC-011 table cell and rejected the valid row labelled `AC-011, IMP-005 contribution`.
+- Evidence: `git diff --check` completed before the Python wrapper; diagnostics showed all AC-005–AC-008 conditions true, both issues resolved, and only the exact AC-011 substring condition false.
+- Unblock: assert the actual qualified AC-011 source label, rerun the complete static/status gate, and continue to review.
+- Resolution: the corrected complete gate passed for all six changed paths, all five PASS rows, the unique IMP-005 section, resolved prior issues, clean whitespace, unchanged HEAD, no task containers, and all three preserved volumes.
+
+#### IMP-005/B04
+- State: RESOLVED
+- Category: TEST
+- Affects: `docs/spec.md` AC-006, AC-007 and mandatory FRESH_READ_ONLY_REVIEW gate
+- Problem: the package Gold contract can miss NULL final deviation metrics for completed P1–P3 and does not independently validate P2/P3 absolute deviation metres.
+- Evidence: the first fresh reviewer showed that `abs(NULL) > tolerance` evaluates to UNKNOWN, the expected rows omit both deviation columns, and no conditional schema test covers them; it returned `VERDICT: BLOCK`.
+- Unblock: make completed-row NULLs explicit violations, validate absolute deviation metres for P2/P3, prove a NULL-deviation mutation fails only the named package contract, restore final state, and obtain fresh re-review.
+- Resolution: completed rows now explicitly reject NULL deviation fields; P2/P3 validate absolute deviation against actual-minus-planned and 50% of plan. Updating P2 deviations to NULL made only `assert_baseline_gold_package_fact_contract` return `FAIL 1`; restoration passed all 16 affected tests and direct assertions showed non-null 0/50/50% deviations for P1/P2/P3.
+
+#### IMP-005/B05
+- State: RESOLVED
+- Category: ENVIRONMENT
+- Affects: targeted acceptance evidence for IMP-005/B04
+- Problem: after Compose reported Trino healthy, the first fixture-loader query reached Trino while the server still reported `SERVER_STARTING_UP`.
+- Evidence: the second task-owned stack start completed healthy in 43.52 seconds; the immediately following loader exited 1 on its first `CREATE SCHEMA` with Trino `INTERNAL_ERROR: SERVER_STARTING_UP`; no model run started.
+- Unblock: prove query readiness with a cheap `SELECT 1`, then rerun the unchanged loader and targeted checks once.
+- Resolution: `SELECT 1` succeeded; the unchanged loader inserted all 45 baseline rows, all 13 models ran successfully, and the patched package contract passed before mutation.
+
+#### IMP-005/B06
+- State: RESOLVED
+- Category: TEST
+- Affects: targeted negative evidence for IMP-005/B04
+- Problem: after mutating P2 deviation fields to NULL, the selected singular test errored during dbt dependency inference instead of evaluating the intended assertion.
+- Evidence: Trino `UPDATE` changed one row; dbt exited 1 with `Compilation Error` requesting an explicit `-- depends_on: {{ ref('gold_package_delivery_fact') }}` hint, so the expected `FAIL 1` assertion was not reached.
+- Unblock: add the explicit dependency hint, restore the model, rerun the positive contract, reapply the NULL mutation, and require the named test to be the sole `FAIL 1`.
+- Resolution: the explicit dependency hint was added; the restored positive contract passed, the repeated NULL mutation produced the sole named `FAIL 1`, and final restoration passed the affected suite.
+
+#### IMP-005/B07
+- State: RESOLVED
+- Category: REVIEW
+- Affects: mandatory STATUS_RECORD and FRESH_READ_ONLY_REVIEW gates
+- Problem: after the successful second reviewer call, `Progress/Remaining` still described that completed re-review as pending; correcting Progress is outside the narrow post-review finalization exception.
+- Evidence: the second fresh reviewer returned `VERDICT: OK` with no findings, while the reviewed section still contained `Remaining: fresh read-only re-review only`.
+- Unblock: set `Remaining` to `none`, validate the status/diff, and obtain one fresh targeted re-review of the corrected section.
+- Resolution: `Remaining` was corrected to `none`; the status/diff gate passed, and the third fresh reviewer verified the complete diff, corrected status section, unchanged prior sections, counters, and evidence with `VERDICT: OK`.
+
+### Review
+- Verdict: OK
+- Calls: 3
+- Fix iterations: 2
+- Details: the first fresh reviewer returned `VERDICT: BLOCK` for B04. After targeted fix iteration 1, the second fresh reviewer confirmed the corrected code, tests, evidence, scope, and status preservation with `VERDICT: OK`. After the required status-only B07 correction, the third fresh targeted reviewer verified the complete diff and corrected status section, found no BLOCKER, DEFERRED, or IMPROVEMENT, and returned `VERDICT: OK`.
+
+### Next action
+User reviews the checkpoint and, if accepted, stages and commits the six IMP-005 paths; no push or transition to another task is authorized.
