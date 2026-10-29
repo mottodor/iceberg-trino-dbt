@@ -1,0 +1,16 @@
+version: 2
+
+sources:
+  - name: fixtures
+    description: Deterministic logistics inputs loaded by the fixture loader.
+    database: "{{ env_var('DBT_TRINO_CATALOG') }}"
+    schema: "{{ env_var('DBT_TRINO_SCHEMA') }}_fixtures"
+    loader: project fixture loader
+    config:
+      tags: [fixtures]
+    tables:
+      - name: hubs
+      - name: packages
+      - name: route_plan_changes
+      - name: route_checkpoints
+      - name: tracking_events

@@ -10,3 +10,12 @@ test-paths: ["tests"]
 models:
   iceberg_trino_dbt:
     +materialized: table
+    bronze:
+      +schema: bronze
+      +tags: [bronze]
+    silver:
+      +schema: silver
+      +tags: [silver]
+    gold:
+      +schema: gold
+      +tags: [gold]

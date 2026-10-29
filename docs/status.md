@@ -342,3 +342,69 @@ User reviews the checkpoint and, if accepted, stages and commits `compose.yaml`,
 
 ### Next action
 User reviews the checkpoint and, if accepted, stages and commits `docs/status.md`; no push or next-task transition is authorized.
+
+## TASK_ID: IMP-001
+
+- Source: `docs/bootstrap.md`, section 5.3, “IMP-001 — dbt skeleton и layer conventions”; `docs/spec.md`, DEC-005, DEC-006, DEC-020, DEC-024, DEC-027, AC-001 and AC-012
+- Status: REVIEW_READY
+- Updated: 2026-10-29T15:01:26+03:00
+- Baseline HEAD: 7f86432a6c6e3e3c315a205b57c5df18b2250026
+
+### Progress
+- Implemented: added Bronze/Silver/Gold directory configuration, deterministic fixture source declarations, an explicit run-prefixed `generate_schema_name` macro, and a singular schema-convention assertion.
+- Remaining: none.
+
+### AC evidence
+| AC / ссылка на источник | Result | Проверка / evidence / причина |
+|---|---|---|
+| `docs/bootstrap.md` §5.3 IMP-001, dbt skeleton and layer conventions | PASS | fast: dbt 1.11.11 parse and exact selection passed; manifest contained the five fixture sources plus both required macros. A temporary model in each configured layer parsed without warnings and resolved to the expected schema. |
+| `docs/bootstrap.md` §5.3 IMP-001, run-prefixed schema isolation | PASS | fast/acceptance: temporary Bronze/Silver/Gold nodes resolved exactly to the three `imp001_contract_*` schemas, fixture sources resolved to `imp001_check_fixtures`, and the runtime `assert_schema_naming_convention` test passed. Removing the prefix in a temporary macro made that named test fail with exactly 3 rows and exit 1. |
+| `docs/bootstrap.md` §5.3 IMP-001, reusable distance macro / PROBE-003 | PASS | acceptance: final-state `assert_probe003_geodesic_expectations` passed against Trino 484 together with the schema-convention test. |
+| `docs/spec.md` AC-001 | PASS | fast: final tracked/untracked review shows only dbt project configuration, fixture source declarations, reusable macros/tests, and this task status; no excluded ingestion, CDC, orchestration, Spark, BI, or security scope was added. |
+| `docs/spec.md` AC-012, IMP-001 contribution | PASS | acceptance: fresh stack became healthy; `dbt debug` connected; the smoke model created one exact row in `lakehouse.imp001_runtime`; both targeted tests passed; Trino listed only the task schema/table beyond built-ins; RustFS listed five Iceberg objects under `warehouse/imp001_runtime/`. Cleanup removed the task schema/prefix and restored the initially stopped stack while preserving the named volume. |
+
+### Issues
+#### IMP-001/B01
+- State: RESOLVED
+- Category: TEST
+- Affects: mandatory fast-check and EVIDENCE_GATE
+- Problem: the first containerized parse/manifest wrapper did not execute because its temporary artifact directory was not writable by the image UID; the diagnostic rerun parsed successfully but its host cleanup also failed on image-owned artifacts.
+- Evidence: the first wrapper exited 2 without producing the manifest assertion; after making the mount writable, `dbt parse` exited 0 and wrote the manifest, but host `rm -rf` reported permission denied for files owned by the container UID.
+- Unblock: run the container with the host UID/GID, then repeat the complete parse, selection, and manifest assertions with successful cleanup.
+- Resolution: the host-UID/GID rerun completed dbt parse and selection and cleaned its temporary directory without a permissions error; the remaining non-zero result came from a separate node-name assertion mismatch.
+
+#### IMP-001/B02
+- State: RESOLVED
+- Category: TEST
+- Affects: mandatory fast-check and EVIDENCE_GATE
+- Problem: the corrected selection assertion expected source names with a `source:` prefix, while dbt 1.11.11 `ls --output name` emits them as `fixtures.<table>`.
+- Evidence: dbt parse exited 0, then the wrapper observed the exact five sources as `fixtures.hubs`, `fixtures.packages`, `fixtures.route_checkpoints`, `fixtures.route_plan_changes`, and `fixtures.tracking_events` and exited 1 only on the mismatched expected-name list.
+- Unblock: align the assertion with the observed machine-readable dbt output and rerun the full manifest contract.
+- Resolution: the aligned wrapper exited 0 in 5 seconds, selected the exact five fixture sources and two tests, and verified source schemas plus `generate_schema_name` and `great_circle_distance_meters` in the manifest.
+
+#### IMP-001/B03
+- State: RESOLVED
+- Category: TEST
+- Affects: `docs/spec.md` AC-012 contribution and final catalog/object evidence
+- Problem: the runtime listing wrapper made two incorrect assumptions about built-in schemas and the configured warehouse prefix, so it did not initially complete the combined evidence assertion.
+- Evidence: the first run rejected Trino's built-in `system` schema; after excluding it, the second run found no objects under `imp001_runtime/`. Direct listing showed the five valid Iceberg objects under `warehouse/imp001_runtime/`, including Parquet, metadata JSON, and Avro files.
+- Unblock: assert the configured `warehouse/imp001_runtime/` prefix while retaining exact row, task schema, and table checks, then rerun the combined contract.
+- Resolution: the corrected combined contract passed with one exact row, only task schema `imp001_runtime`, only table `probe002_smoke`, and five required Iceberg objects.
+
+#### IMP-001/B04
+- State: RESOLVED
+- Category: TEST
+- Affects: mandatory runtime cleanup and environment restoration
+- Problem: after the schema drop and final positive test, the cleanup wrapper expected AWS CLI field `KeyCount=0`; RustFS omitted both `KeyCount` and `Contents` for the empty prefix, so the wrapper stopped before `docker compose down`.
+- Evidence: `DROP SCHEMA lakehouse.imp001_runtime CASCADE` succeeded; direct follow-up returned an empty prefix response with no `Contents`, while RustFS, Polaris, and Trino remained healthy/running because teardown was not reached.
+- Unblock: treat missing/empty `Contents` as zero objects, then complete Compose teardown and verify the project volume is preserved.
+- Resolution: the corrected assertion counted missing `Contents` as zero, confirmed zero task schemas and objects, completed `docker compose down` in 3 seconds, removed project containers/network, and preserved `iceberg-trino-dbt_rustfs-data`.
+
+### Review
+- Verdict: OK
+- Calls: 1
+- Fix iterations: 0
+- Details: one fresh read-only reviewer inspected the complete tracked/untracked diff, all three new files, source contracts, runtime/mutation/cleanup evidence, the IMP-001 status section, and unchanged prior task sections; it found no BLOCKER, DEFERRED, or IMPROVEMENT and returned `VERDICT OK`.
+
+### Next action
+User reviews the checkpoint and, if accepted, stages and commits `dbt/dbt_project.yml`, `dbt/macros/generate_schema_name.sql`, `dbt/models/fixtures/sources.yml`, `dbt/tests/assert_schema_naming_convention.sql`, and `docs/status.md`; no push or next-task transition is authorized.
