@@ -927,3 +927,39 @@ User reviews the checkpoint and, if accepted, stages and commits `docs/status.md
 
 ### Next action
 User reviews the checkpoint and, if accepted, stages and commits `scripts/run_schema_evolution_acceptance.py` and `docs/status.md`; no push or transition to another task is authorized.
+
+## TASK_ID: SE-IMP-001
+
+- Source: `docs/bootstrap-schema-evolution.md` §5.3, “SE-IMP-001 — pre/post core regression capture”; `docs/spec.md` AC-013 and AC-020
+- Status: REVIEW_READY
+- Updated: 2026-10-29T23:22:30+03:00
+- Baseline HEAD: 69678d54758aa4b5e485255d09baeb2a0353a88d
+
+### Progress
+- Implemented: added pre/post core regression orchestration, deterministic schema/result capture, exact comparison, broad `EVO-P5` absence checks, and an explicit incomplete-slice gate that keeps AC-014–AC-020 from false PASS. Fast checks and the isolated runtime workflow passed their task assertions; cleanup restored the initially stopped Compose state and preserved the project volume.
+- Remaining: none.
+
+### AC evidence
+| AC / ссылка на источник | Result | Проверка / evidence / причина |
+|---|---|---|
+| `docs/spec.md` AC-013; `docs/bootstrap-schema-evolution.md` §5.3 SE-IMP-001 | PASS | acceptance: isolated run `seimp001_core` completed two full 128-result core builds; nine deterministic schema/result captures matched exactly pre/post, and ten package-bearing core relations each had zero `EVO-P5` rows in both phases. The runner recorded `AC-013=PASS` before the intentional incomplete-slice stop. |
+| `docs/spec.md` AC-020, SE-IMP-001 contribution | PASS | fast/acceptance: LSP diagnostics and `py_compile` passed; comparator mutation/missing-key probes detected the changed contract. The incomplete runner exited 1 with the exact next-task diagnostic, left AC-014–AC-020 `NOT_RUN`, wrote a FAIL summary rather than a false slice PASS, completed clean secret scan/616-file manifest, removed task schemas/objects/containers, and preserved `iceberg-trino-dbt_rustfs-data`. |
+
+### Issues
+#### SE-IMP-001/B01
+- State: RESOLVED
+- Category: TEST
+- Affects: mandatory FINAL_EVIDENCE_AND_DIFF_GATE for AC-013
+- Problem: the post-run evidence wrapper compared quoted Trino CSV lines as raw text, so it rejected valid zero-count evidence after the runtime workflow had completed.
+- Evidence: the runner exited 1 with the intended incomplete-slice diagnostic after 186 seconds; summary assertions confirmed `AC-013=PASS` and zero core mismatches, then the wrapper failed because a valid row was encoded as `"bronze.bronze_packages","0"` rather than ending in unquoted `,0`.
+- Unblock: parse both `evo_p5_absence.csv` files with Python `csv`, re-run the final evidence assertions without repeating the accepted runtime, and confirm cleanup/environment restoration.
+- Resolution: the corrected CSV parser confirmed ten zero-count rows in both phases; both 128-result builds, nine matched contracts, clean secret scan, 616-file manifest, zero task containers, and preservation of the original project volume were revalidated.
+
+### Review
+- Verdict: OK
+- Calls: 1
+- Fix iterations: 0
+- Details: one fresh read-only reviewer inspected the complete two-file diff, task contracts, implementation, saved acceptance evidence, lifecycle/cleanup behavior, the SE-IMP-001 status section, and preservation of prior sections; it found no BLOCKER, DEFERRED, or IMPROVEMENT and returned `VERDICT OK`.
+
+### Next action
+User reviews the checkpoint and, if accepted, stages and commits `scripts/run_schema_evolution_acceptance.py` and `docs/status.md`; no push or transition to SE-IMP-002 is authorized.

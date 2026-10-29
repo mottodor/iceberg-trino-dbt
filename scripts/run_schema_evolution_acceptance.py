@@ -18,10 +18,23 @@ from run_acceptance import (
     ROOT,
     RUN_ID_PATTERN,
     iso_now,
+    qualified,
 )
 
 EVOLUTION_TABLE = "schema_evolution_package_delivery"
 SCHEMA_EVOLUTION_ACS = tuple(f"AC-{number:03d}" for number in range(13, 21))
+
+
+def core_contract_mismatches(
+    before: dict[str, list[list[str]]],
+    after: dict[str, list[list[str]]],
+) -> list[str]:
+    """Return the sorted contract captures that differ between two core runs."""
+    return sorted(
+        name
+        for name in before.keys() | after.keys()
+        if before.get(name) != after.get(name)
+    )
 
 
 class SchemaEvolutionAcceptanceRun(AcceptanceRun):
@@ -102,9 +115,234 @@ class SchemaEvolutionAcceptanceRun(AcceptanceRun):
             raise AcceptanceError(f"run-prefix schemas already exist: {rows[1:]}")
 
     def run_schema_evolution_workflow(self) -> None:
-        raise AcceptanceError(
-            "schema-evolution exercise is not implemented yet; continue with SE-IMP-001"
+        self.run_baseline()
+        before = self.capture_core_contract("pre")
+
+        self.run_schema_evolution_steps()
+
+        self.dbt(
+            self.baseline_prefix,
+            ["build", "--select", "tag:bronze", "tag:silver", "tag:gold"],
+            "core/post/build",
+            "core/post/build/dbt_build.log",
         )
+        self.assert_run_results(
+            "core/post/build/target/run_results.json",
+            allowed_statuses={"success", "pass"},
+            expected_count=128,
+        )
+        after = self.capture_core_contract("post")
+
+        mismatches = core_contract_mismatches(before, after)
+        self.write_json(
+            "core/comparison.json",
+            {
+                "before": "core/pre",
+                "after": "core/post",
+                "matched_contracts": sorted(before.keys() - set(mismatches)),
+                "mismatches": mismatches,
+            },
+        )
+        if mismatches:
+            raise AcceptanceError(
+                "core regression changed after schema evolution: "
+                + ", ".join(mismatches)
+            )
+
+        self.ac_results["AC-013"] = "PASS"
+        pending = [
+            ac for ac in SCHEMA_EVOLUTION_ACS if self.ac_results[ac] != "PASS"
+        ]
+        if pending:
+            self.write_json(
+                "evolution/pending.json",
+                {
+                    "completed": [
+                        ac
+                        for ac in SCHEMA_EVOLUTION_ACS
+                        if self.ac_results[ac] == "PASS"
+                    ],
+                    "pending": pending,
+                    "next_task": "SE-IMP-002",
+                },
+            )
+            raise AcceptanceError(
+                "schema-evolution exercise is incomplete after core regression; "
+                "continue with SE-IMP-002"
+            )
+
+    def run_schema_evolution_steps(self) -> None:
+        """Extension point for the evolution operations added by SE-IMP-002–005."""
+
+    def capture_core_contract(self, phase: str) -> dict[str, list[list[str]]]:
+        if phase not in {"pre", "post"}:
+            raise AcceptanceError(f"invalid core regression phase: {phase}")
+
+        prefix = self.baseline_prefix
+        schemas = [f"{prefix}_{layer}" for layer in LAYERS]
+        quoted_schemas = ", ".join(f"'{schema}'" for schema in schemas)
+        captures = {
+            "columns": self.query_csv(
+                f"core/{phase}/columns.csv",
+                """
+                SELECT
+                    table_schema,
+                    table_name,
+                    ordinal_position,
+                    column_name,
+                    data_type,
+                    is_nullable
+                FROM lakehouse.information_schema.columns
+                WHERE table_schema IN ("""
+                + quoted_schemas
+                + ") ORDER BY table_schema, table_name, ordinal_position",
+            ),
+            "route_binding": self.query_csv(
+                f"core/{phase}/route_binding.csv",
+                f"""
+                SELECT
+                    package_id,
+                    route_version_id,
+                    CAST(promised_delivery_at AS varchar) AS promised_delivery_at
+                FROM {qualified(prefix, 'silver', 'silver_package_route_binding')}
+                ORDER BY package_id
+                """,
+            ),
+            "layer_counts": self.query_csv(
+                f"core/{phase}/layer_counts.csv",
+                f"""
+                SELECT
+                    (SELECT count(*) FROM {qualified(prefix, 'bronze', 'bronze_tracking_events')}) AS bronze_events,
+                    (SELECT count(*) FROM {qualified(prefix, 'silver', 'silver_tracking_events_typed')}) AS typed_events,
+                    (SELECT count(*) FROM {qualified(prefix, 'silver', 'silver_tracking_events')}) AS canonical_events,
+                    (SELECT count(*) FROM {qualified(prefix, 'gold', 'gold_package_delivery_fact')}) AS package_facts,
+                    (SELECT count_if(delivered_at IS NOT NULL) FROM {qualified(prefix, 'gold', 'gold_package_delivery_fact')}) AS completed_packages,
+                    (SELECT count_if(delivered_at IS NULL) FROM {qualified(prefix, 'gold', 'gold_package_delivery_fact')}) AS active_packages,
+                    (SELECT count(*) FROM {qualified(prefix, 'gold', 'gold_hub_visits')}) AS visits,
+                    (SELECT count_if(NOT is_open) FROM {qualified(prefix, 'gold', 'gold_hub_visits')}) AS closed_visits,
+                    (SELECT count_if(is_open) FROM {qualified(prefix, 'gold', 'gold_hub_visits')}) AS open_visits,
+                    (SELECT count(*) FROM {qualified(prefix, 'gold', 'gold_package_delivery_fact')} WHERE shipment_id = 'S2') AS shipment_s2_packages
+                """,
+            ),
+            "duplicate_reconciliation": self.query_csv(
+                f"core/{phase}/duplicate_reconciliation.csv",
+                f"""
+                SELECT
+                    (SELECT count(*) FROM {qualified(prefix, 'bronze', 'bronze_tracking_events')} WHERE event_id = 'P3-E02') AS bronze_rows,
+                    (SELECT count(DISTINCT event_payload_fingerprint) FROM {qualified(prefix, 'silver', 'silver_tracking_events_typed')} WHERE event_id = 'P3-E02') AS payload_variants,
+                    (SELECT count(*) FROM {qualified(prefix, 'silver', 'silver_tracking_events')} WHERE event_id = 'P3-E02') AS canonical_rows
+                """,
+            ),
+            "package_facts": self.query_csv(
+                f"core/{phase}/package_facts.csv",
+                f"""
+                SELECT
+                    package_id,
+                    current_status,
+                    delivery_duration_hours,
+                    delay_hours,
+                    is_on_time,
+                    visit_count,
+                    completed_visit_count,
+                    open_visit_count,
+                    completed_dwell_hours,
+                    actual_distance_meters / planned_distance_meters AS route_ratio,
+                    final_route_deviation_pct
+                FROM {qualified(prefix, 'gold', 'gold_package_delivery_fact')}
+                ORDER BY package_id
+                """,
+            ),
+            "hub_visits": self.query_csv(
+                f"core/{phase}/hub_visits.csv",
+                f"""
+                SELECT
+                    package_id,
+                    visit_seq,
+                    hub_code,
+                    CAST(arrived_at AS varchar) AS arrived_at,
+                    CAST(departed_at AS varchar) AS departed_at,
+                    dwell_time_hours,
+                    is_open
+                FROM {qualified(prefix, 'gold', 'gold_hub_visits')}
+                ORDER BY package_id, visit_seq
+                """,
+            ),
+            "route_version_efficiency": self.query_csv(
+                f"core/{phase}/route_version_efficiency.csv",
+                f"""
+                SELECT
+                    route_version_id,
+                    completed_package_count,
+                    active_package_count,
+                    on_time_rate_pct,
+                    average_delay_hours,
+                    average_final_route_deviation_pct
+                FROM {qualified(prefix, 'gold', 'gold_route_version_efficiency')}
+                ORDER BY route_version_id
+                """,
+            ),
+            "route_version_hub_dwell": self.query_csv(
+                f"core/{phase}/route_version_hub_dwell.csv",
+                f"""
+                SELECT route_version_id, hub_code, completed_dwell_hours
+                FROM {qualified(prefix, 'gold', 'gold_route_version_hub_dwell')}
+                ORDER BY route_version_id, hub_code
+                """,
+            ),
+            "evo_p5_absence": self.query_csv(
+                f"core/{phase}/evo_p5_absence.csv",
+                f"""
+                SELECT relation_name, row_count
+                FROM (
+                    SELECT 'fixtures.packages' AS relation_name, count(*) AS row_count
+                    FROM {qualified(prefix, 'fixtures', 'packages')}
+                    WHERE package_id = 'EVO-P5'
+                    UNION ALL
+                    SELECT 'fixtures.tracking_events', count(*)
+                    FROM {qualified(prefix, 'fixtures', 'tracking_events')}
+                    WHERE package_id = 'EVO-P5'
+                    UNION ALL
+                    SELECT 'bronze.bronze_packages', count(*)
+                    FROM {qualified(prefix, 'bronze', 'bronze_packages')}
+                    WHERE package_id = 'EVO-P5'
+                    UNION ALL
+                    SELECT 'bronze.bronze_tracking_events', count(*)
+                    FROM {qualified(prefix, 'bronze', 'bronze_tracking_events')}
+                    WHERE package_id = 'EVO-P5'
+                    UNION ALL
+                    SELECT 'silver.silver_tracking_events_typed', count(*)
+                    FROM {qualified(prefix, 'silver', 'silver_tracking_events_typed')}
+                    WHERE package_id = 'EVO-P5'
+                    UNION ALL
+                    SELECT 'silver.silver_tracking_events', count(*)
+                    FROM {qualified(prefix, 'silver', 'silver_tracking_events')}
+                    WHERE package_id = 'EVO-P5'
+                    UNION ALL
+                    SELECT 'silver.silver_package_current_state', count(*)
+                    FROM {qualified(prefix, 'silver', 'silver_package_current_state')}
+                    WHERE package_id = 'EVO-P5'
+                    UNION ALL
+                    SELECT 'silver.silver_package_route_binding', count(*)
+                    FROM {qualified(prefix, 'silver', 'silver_package_route_binding')}
+                    WHERE package_id = 'EVO-P5'
+                    UNION ALL
+                    SELECT 'gold.gold_hub_visits', count(*)
+                    FROM {qualified(prefix, 'gold', 'gold_hub_visits')}
+                    WHERE package_id = 'EVO-P5'
+                    UNION ALL
+                    SELECT 'gold.gold_package_delivery_fact', count(*)
+                    FROM {qualified(prefix, 'gold', 'gold_package_delivery_fact')}
+                    WHERE package_id = 'EVO-P5'
+                )
+                ORDER BY relation_name
+                """,
+            ),
+        }
+
+        absence_rows = captures["evo_p5_absence"]
+        if len(absence_rows) != 11 or any(row[1] != "0" for row in absence_rows[1:]):
+            raise AcceptanceError(f"EVO-P5 leaked into core relations: {absence_rows}")
+        return captures
 
     def cleanup_task_data(self) -> None:
         schemas = [
