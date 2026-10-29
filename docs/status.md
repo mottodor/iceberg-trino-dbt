@@ -963,3 +963,48 @@ User reviews the checkpoint and, if accepted, stages and commits `scripts/run_sc
 
 ### Next action
 User reviews the checkpoint and, if accepted, stages and commits `scripts/run_schema_evolution_acceptance.py` and `docs/status.md`; no push or transition to SE-IMP-002 is authorized.
+
+## TASK_ID: SE-IMP-002
+
+- Source: `docs/bootstrap-schema-evolution.md` §5.3, “SE-IMP-002 — S0 creation и evidence”; `docs/spec.md` AC-014 and AC-020
+- Status: REVIEW_READY
+- Updated: 2026-10-29T23:44:32+03:00
+- Baseline HEAD: 44addd7d5263bb7d480569d19f25d1a3ad0d9847
+
+### Progress
+- Implemented: added the isolated evolution schema and six-column S0 CTAS, representation-independent exact row assertions, single-snapshot validation, `$files` and object mapping, streamed Parquet SHA-256 capture, metadata-log capture, and parsed Iceberg schema/field-ID evidence. Final isolated run `seimp002_s0b` passed the SE-IMP-002 assertions and preserved the intentional incomplete-slice gate for SE-IMP-003.
+- Remaining: none.
+
+### AC evidence
+| AC / ссылка на источник | Result | Проверка / evidence / причина |
+|---|---|---|
+| `docs/spec.md` AC-014; `docs/bootstrap-schema-evolution.md` §5.3 SE-IMP-002 | PASS | acceptance: isolated run `seimp002_s0b` created the six-column evolution table with exact P1–P4 rows, one generated S0 snapshot `1452054778057870415`, one Parquet file containing four records, five task objects, streamed SHA-256 file identity, one metadata-log entry, and parsed metadata JSON with schema ID 0, snapshot ID S0, last column ID 6 and field IDs 1–6. |
+| `docs/spec.md` AC-020, SE-IMP-002 contribution | PASS | fast/acceptance: LSP diagnostics, `py_compile`, helper mutation probes and `git diff --check` passed. Run `seimp002_s0b` recorded AC-013/AC-014 PASS, intentionally left AC-015–AC-020 NOT_RUN with `continue with SE-IMP-003`, completed clean secret scan and a 632-file manifest, removed all task schemas/objects/containers/network, and preserved the three pre-existing named volumes. |
+
+### Issues
+#### SE-IMP-002/B01
+- State: RESOLVED
+- Category: TEST
+- Affects: mandatory EVIDENCE_GATE for parsed Iceberg field-ID evidence
+- Problem: the initial metadata mutation probe did not reject duplicate Iceberg field IDs, so the parser could accept an invalid identity map.
+- Evidence: the pure-helper harness changed `delivery_status` field ID from 3 to the already used ID 2; `parse_s0_metadata` returned success and the wrapper exited 1 with `metadata mutation was not detected`.
+- Unblock: require field IDs to be unique, rerun the positive and duplicate-ID/current-snapshot mutations, then continue runtime acceptance.
+- Resolution: the parser now rejects reused field IDs; the positive six-field metadata sample passed, and duplicate-ID, wrong-current-snapshot and wrong-field-type mutations all raised `AcceptanceError`. `py_compile`, LSP diagnostics and `git diff --check` also passed.
+
+#### SE-IMP-002/B02
+- State: RESOLVED
+- Category: TEST
+- Affects: `docs/spec.md` AC-014 exact S0 row evidence
+- Problem: the first runtime assertion compared Trino DOUBLE text to fixed decimal strings, while Trino 484 rendered the valid values in scientific notation.
+- Evidence: run `seimp002_s0` reached S0 creation and returned the exact P1–P4 identifiers/status/count/boolean values, but `delivery_duration_hours` appeared as `4.8E1`, `4.8E1`, `3.6E1`, `NULL`; the runner exited 1 after 141 seconds at the row wrapper.
+- Unblock: compare the DOUBLE values numerically or render them through an explicit stable decimal projection, then rerun the full isolated workflow with a fresh run ID.
+- Resolution: the row assertion now parses non-null duration values numerically while preserving exact identifiers, statuses, counts, booleans and NULLs. A scientific-notation positive sample passed, a `49.0` mutation failed, and full run `seimp002_s0b` passed AC-014 before the intentional SE-IMP-003 stop.
+
+### Review
+- Verdict: OK
+- Calls: 1
+- Fix iterations: 0
+- Details: one fresh read-only reviewer inspected the complete two-file diff, source contracts, S0 implementation, saved `seimp002_s0b` evidence, ownership/cleanup and no-false-PASS behavior, the SE-IMP-002 status section, and preservation of prior sections; it found no BLOCKER, DEFERRED, or IMPROVEMENT and returned `VERDICT: OK`.
+
+### Next action
+User reviews the checkpoint and, if accepted, stages and commits `scripts/run_schema_evolution_acceptance.py` and `docs/status.md`; no push or transition to SE-IMP-003 is authorized.

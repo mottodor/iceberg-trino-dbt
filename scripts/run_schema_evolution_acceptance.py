@@ -5,24 +5,58 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import sys
 from pathlib import Path
+from typing import Any
 
 from run_acceptance import (
     AcceptanceError,
     AcceptanceRun,
+    BUCKET,
     CATALOG,
     DEFAULT_EVIDENCE_ROOT,
     LAYERS,
     ROOT,
     RUN_ID_PATTERN,
     iso_now,
+    normalize_sql,
     qualified,
 )
 
 EVOLUTION_TABLE = "schema_evolution_package_delivery"
 SCHEMA_EVOLUTION_ACS = tuple(f"AC-{number:03d}" for number in range(13, 21))
+S0_COLUMNS = [
+    ("package_id", "varchar"),
+    ("route_version_id", "varchar"),
+    ("delivery_status", "varchar"),
+    ("completed_visit_count", "integer"),
+    ("delivery_duration_hours", "double"),
+    ("is_on_time", "boolean"),
+]
+S0_EXPECTED_ROWS = [
+    [
+        "package_id",
+        "route_version_id",
+        "delivery_status",
+        "completed_visit_count",
+        "delivery_duration_hours",
+        "is_on_time",
+    ],
+    ["P1", "R1-V1", "delivered", "1", "48.0", "true"],
+    ["P2", "R1-V2", "delivered", "3", "48.0", "false"],
+    ["P3", "R1-V2", "delivered", "2", "36.0", "true"],
+    ["P4", "R1-V2", "arrived_at_hub", "0", "NULL", "NULL"],
+]
+S0_ICEBERG_TYPES = {
+    "package_id": "string",
+    "route_version_id": "string",
+    "delivery_status": "string",
+    "completed_visit_count": "int",
+    "delivery_duration_hours": "double",
+    "is_on_time": "boolean",
+}
 
 
 def core_contract_mismatches(
@@ -37,6 +71,107 @@ def core_contract_mismatches(
     )
 
 
+def assert_s0_rows(rows: list[list[str]]) -> None:
+    """Validate the four S0 rows without depending on DOUBLE text formatting."""
+    if not rows or rows[0] != S0_EXPECTED_ROWS[0] or len(rows) != len(S0_EXPECTED_ROWS):
+        raise AcceptanceError(f"unexpected S0 rows: {rows}")
+    for actual, expected in zip(rows[1:], S0_EXPECTED_ROWS[1:], strict=True):
+        if len(actual) != 6 or actual[:4] != expected[:4] or actual[5] != expected[5]:
+            raise AcceptanceError(f"unexpected S0 row: {actual}")
+        if expected[4] == "NULL":
+            if actual[4] != "NULL":
+                raise AcceptanceError(f"unexpected S0 duration: {actual}")
+            continue
+        try:
+            actual_duration = float(actual[4])
+            expected_duration = float(expected[4])
+        except ValueError as error:
+            raise AcceptanceError(f"invalid S0 duration: {actual}") from error
+        if actual_duration != expected_duration:
+            raise AcceptanceError(f"unexpected S0 duration: {actual}")
+
+
+def parse_s0_snapshot(rows: list[list[str]]) -> int:
+    """Validate the single initial data snapshot and return its generated ID."""
+    expected_header = ["snapshot_id", "parent_id", "operation"]
+    if not rows or rows[0] != expected_header or len(rows) != 2:
+        raise AcceptanceError(f"expected one S0 snapshot row, got: {rows}")
+    snapshot_id, parent_id, operation = rows[1]
+    try:
+        parsed_snapshot_id = int(snapshot_id)
+    except ValueError as error:
+        raise AcceptanceError(f"invalid S0 snapshot ID: {snapshot_id}") from error
+    if parsed_snapshot_id <= 0 or parent_id or operation.lower() != "append":
+        raise AcceptanceError(f"invalid S0 snapshot contract: {rows[1]}")
+    return parsed_snapshot_id
+
+
+def parse_s0_metadata(metadata: dict[str, Any], snapshot_id: int) -> dict[str, Any]:
+    """Validate the initial Iceberg metadata schema and return stable field evidence."""
+    current_schema_id = metadata.get("current-schema-id")
+    current_snapshot_id = metadata.get("current-snapshot-id")
+    last_column_id = metadata.get("last-column-id")
+    schemas = metadata.get("schemas")
+    if not isinstance(current_schema_id, int) or not isinstance(schemas, list):
+        raise AcceptanceError("metadata JSON lacks current schema information")
+    if current_snapshot_id != snapshot_id:
+        raise AcceptanceError(
+            f"metadata current snapshot {current_snapshot_id} != S0 {snapshot_id}"
+        )
+
+    current_schemas = [
+        schema
+        for schema in schemas
+        if isinstance(schema, dict) and schema.get("schema-id") == current_schema_id
+    ]
+    if len(current_schemas) != 1:
+        raise AcceptanceError(
+            f"expected one current Iceberg schema {current_schema_id}, got {len(current_schemas)}"
+        )
+    fields = current_schemas[0].get("fields")
+    if not isinstance(fields, list) or len(fields) != len(S0_COLUMNS):
+        raise AcceptanceError(f"unexpected S0 metadata fields: {fields}")
+
+    field_ids: dict[str, int] = {}
+    field_types: dict[str, str] = {}
+    used_field_ids: set[int] = set()
+    for field in fields:
+        if not isinstance(field, dict):
+            raise AcceptanceError(f"invalid metadata field: {field}")
+        name = field.get("name")
+        field_id = field.get("id")
+        field_type = field.get("type")
+        if (
+            not isinstance(name, str)
+            or not isinstance(field_id, int)
+            or not isinstance(field_type, str)
+        ):
+            raise AcceptanceError(f"invalid metadata field identity: {field}")
+        if name in field_ids or field_id in used_field_ids or field_id <= 0:
+            raise AcceptanceError(f"duplicate or invalid metadata field: {field}")
+        field_ids[name] = field_id
+        field_types[name] = field_type
+        used_field_ids.add(field_id)
+
+    expected_names = [name for name, _ in S0_COLUMNS]
+    if list(field_ids) != expected_names or field_types != S0_ICEBERG_TYPES:
+        raise AcceptanceError(
+            f"unexpected S0 metadata schema: names={list(field_ids)}, types={field_types}"
+        )
+    if last_column_id != max(field_ids.values()):
+        raise AcceptanceError(
+            f"last-column-id {last_column_id} does not match fields {field_ids}"
+        )
+
+    return {
+        "current_schema_id": current_schema_id,
+        "current_snapshot_id": current_snapshot_id,
+        "last_column_id": last_column_id,
+        "field_ids": field_ids,
+        "field_types": field_types,
+    }
+
+
 class SchemaEvolutionAcceptanceRun(AcceptanceRun):
     """Lifecycle and safety boundary for the schema-evolution slice."""
 
@@ -45,6 +180,9 @@ class SchemaEvolutionAcceptanceRun(AcceptanceRun):
         self.ac_results = {ac: "NOT_RUN" for ac in SCHEMA_EVOLUTION_ACS}
         self.negative_prefixes = {}
         self.evolution_schema = f"{run_id}_evolution"
+        self.s0_snapshot_id: int | None = None
+        self.s0_file_identities: list[dict[str, Any]] = []
+        self.s0_metadata_summary: dict[str, Any] = {}
 
     def run(self) -> None:
         self.preflight()
@@ -163,16 +301,309 @@ class SchemaEvolutionAcceptanceRun(AcceptanceRun):
                         if self.ac_results[ac] == "PASS"
                     ],
                     "pending": pending,
-                    "next_task": "SE-IMP-002",
+                    "next_task": "SE-IMP-003",
                 },
             )
             raise AcceptanceError(
-                "schema-evolution exercise is incomplete after core regression; "
-                "continue with SE-IMP-002"
+                "schema-evolution exercise is incomplete after S0 capture; "
+                "continue with SE-IMP-003"
             )
 
     def run_schema_evolution_steps(self) -> None:
-        """Extension point for the evolution operations added by SE-IMP-002–005."""
+        """Create the isolated S0 table and capture its initial invariant bundle."""
+        evolution_table = self.evolution_table_name()
+        source_table = qualified(
+            self.baseline_prefix,
+            "gold",
+            "gold_package_delivery_fact",
+        )
+        self.execute_sql(
+            "evolution/s0/create_schema.log",
+            f'CREATE SCHEMA "{CATALOG}"."{self.evolution_schema}"',
+        )
+        self.execute_sql(
+            "evolution/s0/create_table.log",
+            f"""
+            CREATE TABLE {evolution_table} AS
+            SELECT
+                CAST(package_id AS varchar) AS package_id,
+                CAST(route_version_id AS varchar) AS route_version_id,
+                CAST(current_status AS varchar) AS delivery_status,
+                CAST(completed_visit_count AS integer) AS completed_visit_count,
+                CAST(delivery_duration_hours AS double) AS delivery_duration_hours,
+                CAST(is_on_time AS boolean) AS is_on_time
+            FROM {source_table}
+            """,
+        )
+        self.capture_s0_evidence()
+        self.ac_results["AC-014"] = "PASS"
+
+    def evolution_table_name(self) -> str:
+        return f'"{CATALOG}"."{self.evolution_schema}"."{EVOLUTION_TABLE}"'
+
+    def execute_sql(self, relative_path: str, sql: str) -> None:
+        self.capture(
+            [
+                "docker",
+                "compose",
+                "exec",
+                "-T",
+                "trino",
+                "trino",
+                "--execute",
+                normalize_sql(sql),
+            ],
+            relative_path,
+        )
+
+    def capture_s0_evidence(self) -> None:
+        evolution_table = self.evolution_table_name()
+        self.query_csv("evolution/s0/describe.csv", f"DESCRIBE {evolution_table}")
+        columns = self.query_csv(
+            "evolution/s0/columns.csv",
+            f"""
+            SELECT column_name, data_type, ordinal_position
+            FROM {CATALOG}.information_schema.columns
+            WHERE table_schema = '{self.evolution_schema}'
+              AND table_name = '{EVOLUTION_TABLE}'
+            ORDER BY ordinal_position
+            """,
+        )
+        expected_columns = [
+            ["column_name", "data_type", "ordinal_position"],
+            *[
+                [name, data_type, str(position)]
+                for position, (name, data_type) in enumerate(S0_COLUMNS, start=1)
+            ],
+        ]
+        if columns != expected_columns:
+            raise AcceptanceError(f"unexpected S0 columns: {columns}")
+
+        rows = self.query_csv(
+            "evolution/s0/rows.csv",
+            f"""
+            SELECT
+                package_id,
+                route_version_id,
+                delivery_status,
+                CAST(completed_visit_count AS varchar) AS completed_visit_count,
+                COALESCE(CAST(delivery_duration_hours AS varchar), 'NULL') AS delivery_duration_hours,
+                COALESCE(CAST(is_on_time AS varchar), 'NULL') AS is_on_time
+            FROM {evolution_table}
+            ORDER BY package_id
+            """,
+        )
+        assert_s0_rows(rows)
+
+        snapshots = self.query_csv(
+            "evolution/s0/snapshots.csv",
+            f"""
+            SELECT
+                CAST(snapshot_id AS varchar) AS snapshot_id,
+                COALESCE(CAST(parent_id AS varchar), '') AS parent_id,
+                operation
+            FROM {self.evolution_metadata_table('snapshots')}
+            ORDER BY committed_at, snapshot_id
+            """,
+        )
+        self.s0_snapshot_id = parse_s0_snapshot(snapshots)
+
+        file_rows = self.query_csv(
+            "evolution/s0/files.csv",
+            f"""
+            SELECT
+                file_path,
+                file_format,
+                CAST(record_count AS varchar) AS record_count,
+                CAST(file_size_in_bytes AS varchar) AS file_size_in_bytes
+            FROM {self.evolution_metadata_table('files')}
+            ORDER BY file_path
+            """,
+        )
+        self.query_csv(
+            "evolution/s0/metadata_log_entries.csv",
+            f"""
+            SELECT
+                CAST(timestamp AS varchar) AS committed_at,
+                file,
+                CAST(latest_snapshot_id AS varchar) AS latest_snapshot_id,
+                CAST(latest_schema_id AS varchar) AS latest_schema_id,
+                CAST(latest_sequence_number AS varchar) AS latest_sequence_number
+            FROM {self.evolution_metadata_table('metadata_log_entries')}
+            ORDER BY timestamp, file
+            """,
+        )
+
+        objects = self.list_objects(f"warehouse/{self.evolution_schema}/")
+        self.write_json("evolution/s0/objects.json", objects)
+        object_rows = objects.get("Contents") or []
+        if not isinstance(object_rows, list) or not object_rows:
+            raise AcceptanceError("S0 object listing is empty")
+        typed_object_rows: list[dict[str, Any]] = []
+        objects_by_key: dict[str, dict[str, Any]] = {}
+        for item in object_rows:
+            if not isinstance(item, dict) or not isinstance(item.get("Key"), str):
+                raise AcceptanceError(f"invalid S0 object listing row: {item}")
+            typed_object_rows.append(item)
+            objects_by_key[item["Key"]] = item
+        self.write_csv(
+            "evolution/s0/objects.csv",
+            [
+                ["key", "size", "etag"],
+                *[
+                    [item["Key"], item.get("Size"), item.get("ETag")]
+                    for item in typed_object_rows
+                ],
+            ],
+        )
+
+        expected_file_header = [
+            "file_path",
+            "file_format",
+            "record_count",
+            "file_size_in_bytes",
+        ]
+        if not file_rows or file_rows[0] != expected_file_header or len(file_rows) < 2:
+            raise AcceptanceError(f"S0 has no data files: {file_rows}")
+        file_identities = []
+        total_records = 0
+        for file_path, file_format, record_count, file_size in file_rows[1:]:
+            object_key = self.object_key(file_path)
+            object_row = objects_by_key.get(object_key)
+            if file_format.upper() != "PARQUET" or object_row is None:
+                raise AcceptanceError(f"invalid S0 data file mapping: {file_path}")
+            object_size_value = object_row.get("Size")
+            try:
+                parsed_record_count = int(record_count)
+                parsed_file_size = int(file_size)
+                if not isinstance(object_size_value, int):
+                    raise TypeError("object size is not an integer")
+                object_size = object_size_value
+            except (TypeError, ValueError) as error:
+                raise AcceptanceError(f"invalid S0 file metrics: {file_rows}") from error
+            if parsed_record_count <= 0 or parsed_file_size <= 0:
+                raise AcceptanceError(f"invalid S0 file metrics: {file_rows}")
+            if object_size != parsed_file_size:
+                raise AcceptanceError(
+                    f"Trino/object size mismatch for {object_key}: "
+                    f"{parsed_file_size} != {object_size}"
+                )
+            total_records += parsed_record_count
+            file_identities.append(
+                {
+                    "file_path": file_path,
+                    "object_key": object_key,
+                    "file_format": file_format.upper(),
+                    "record_count": parsed_record_count,
+                    "size": parsed_file_size,
+                    "sha256": self.object_sha256(object_key),
+                }
+            )
+        if total_records != 4:
+            raise AcceptanceError(f"S0 data files contain {total_records} rows, expected 4")
+        self.s0_file_identities = file_identities
+        self.write_json("evolution/s0/file_identities.json", file_identities)
+
+        metadata_keys = sorted(
+            key for key in objects_by_key if key.endswith(".metadata.json")
+        )
+        if len(metadata_keys) != 1:
+            raise AcceptanceError(
+                f"expected one initial metadata JSON, got: {metadata_keys}"
+            )
+        metadata_key = metadata_keys[0]
+        metadata_text = self.read_object_text(metadata_key)
+        self.write_text("evolution/s0/metadata.json", metadata_text)
+        try:
+            metadata = json.loads(metadata_text)
+        except json.JSONDecodeError as error:
+            raise AcceptanceError(f"invalid metadata JSON: {metadata_key}") from error
+        if not isinstance(metadata, dict) or self.s0_snapshot_id is None:
+            raise AcceptanceError(f"invalid metadata JSON root: {metadata_key}")
+        metadata_summary = parse_s0_metadata(metadata, self.s0_snapshot_id)
+        metadata_summary.update(
+            {
+                "object_key": metadata_key,
+                "size": len(metadata_text.encode("utf-8")),
+                "sha256": hashlib.sha256(metadata_text.encode("utf-8")).hexdigest(),
+            }
+        )
+        self.s0_metadata_summary = metadata_summary
+        self.write_json("evolution/s0/metadata_summary.json", metadata_summary)
+        self.write_json(
+            "evolution/s0/invariant_bundle.json",
+            {
+                "symbolic_snapshot": "S0",
+                "snapshot_id": self.s0_snapshot_id,
+                "columns": [
+                    {"name": name, "type": data_type}
+                    for name, data_type in S0_COLUMNS
+                ],
+                "row_count": 4,
+                "file_identities": file_identities,
+                "metadata": metadata_summary,
+            },
+        )
+
+    def evolution_metadata_table(self, suffix: str) -> str:
+        return (
+            f'"{CATALOG}"."{self.evolution_schema}".'
+            f'"{EVOLUTION_TABLE}${suffix}"'
+        )
+
+    def object_key(self, location: str) -> str:
+        for scheme in ("s3://", "s3a://", "s3n://"):
+            prefix = f"{scheme}{BUCKET}/"
+            if location.startswith(prefix):
+                key = location[len(prefix):]
+                expected_prefix = f"warehouse/{self.evolution_schema}/"
+                if key.startswith(expected_prefix):
+                    return key
+        raise AcceptanceError(f"unexpected task object location: {location}")
+
+    def object_sha256(self, object_key: str) -> str:
+        result = self.capture(
+            [
+                "docker",
+                "compose",
+                "run",
+                "--rm",
+                "--no-deps",
+                "--entrypoint",
+                "sh",
+                "bucket-setup",
+                "-c",
+                'set -eu; aws s3 cp "$1" /tmp/object >/dev/null; sha256sum /tmp/object',
+                "sh",
+                f"s3://{BUCKET}/{object_key}",
+            ],
+            None,
+        )
+        digest = result.stdout.split(maxsplit=1)[0] if result.stdout.strip() else ""
+        if len(digest) != 64 or any(
+            character not in "0123456789abcdef" for character in digest
+        ):
+            raise AcceptanceError(f"invalid SHA-256 for {object_key}: {result.stdout}")
+        return digest
+
+    def read_object_text(self, object_key: str) -> str:
+        return self.capture(
+            [
+                "docker",
+                "compose",
+                "run",
+                "--rm",
+                "--no-deps",
+                "--entrypoint",
+                "aws",
+                "bucket-setup",
+                "s3",
+                "cp",
+                f"s3://{BUCKET}/{object_key}",
+                "-",
+            ],
+            None,
+        ).stdout
 
     def capture_core_contract(self, phase: str) -> dict[str, list[list[str]]]:
         if phase not in {"pre", "post"}:
