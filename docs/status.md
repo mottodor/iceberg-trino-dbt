@@ -687,35 +687,71 @@ IMP-005 is complete and committed as `345be2c`; await separate authorization for
 ## TASK_ID: IMP-006
 
 - Source: `docs/bootstrap.md`, section 5.3, “IMP-006 — Gold aggregates и reconciliation”; `docs/spec.md`, DEC-013, DEC-026, AC-010 and AC-011
-- Status: BLOCKED
-- Updated: 2026-10-29T17:30:38+03:00
-- Baseline HEAD: 345be2c0dca8cbc8e4505241f84bf882b13a7ebd
+- Status: REVIEW_READY
+- Updated: 2026-10-29T17:57:07+03:00
+- Baseline HEAD: d1041724a6a9841968f991755985830f16b91bdb
 
 ### Progress
-- Implemented: none; implementation did not start because PRECHECK found pre-existing working-tree changes not attributable to this task.
-- Remaining: implement route-version and completed hub-dwell aggregates, cross-layer reconciliation, required tests, runtime evidence, and independent review.
+- Implemented: added route-version efficiency and route-version/hub completed-dwell aggregates, model constraints, exact baseline contracts, and cross-layer reconciliation. Fast parse/selection passed; the 128-node baseline build, direct aggregate/count assertions, three targeted mutations, final 43-test Gold suite, catalog/object listing, and scoped whitespace checks passed. The four task schemas and 109 task-prefix objects were removed, the initially stopped stack was restored, and all three pre-existing volumes were preserved.
+- Remaining: none.
 
 ### AC evidence
 | AC / ссылка на источник | Result | Проверка / evidence / причина |
 |---|---|---|
-| `docs/spec.md` AC-010; `docs/bootstrap.md` §5.3 IMP-006 | NOT_RUN | PRECHECK stopped before implementation and checks because the working tree already contained unrelated changes. |
-| `docs/spec.md` AC-011; `docs/bootstrap.md` §5.3 IMP-006 | NOT_RUN | PRECHECK stopped before implementation and checks because the working tree already contained unrelated changes. |
+| `docs/spec.md` AC-010; `docs/bootstrap.md` §5.3 IMP-006 | PASS | acceptance: the 128-node baseline build passed. Final exact assertions returned `R1-V1` = 1 completed, 0 active, 100% on-time, 0h average delay, 0% average deviation; `R1-V2` = 2 completed, 1 active, 50% on-time, 6h average delay, 50% average deviation. Route-version/hub rows were V1/B=4h and V2/B=6h, X=11h, D=2h with the P4 open visit excluded. Single-row route and hub mutations made only their exact named tests fail with `FAIL 2`; restoration passed the final 43/43 Gold tests. |
+| `docs/spec.md` AC-011; `docs/bootstrap.md` §5.3 IMP-006 | PASS | acceptance: final reconciliation passed for 28 Bronze event rows, 27 canonical events with one explained duplicate, 4 package facts (3 completed/1 active), 7 visits (6 closed/1 open), two route aggregates, four route/hub aggregates, model relationships, and independent S2 rows P2/P3. Changing P3 to shipment S9 made only `assert_cross_layer_reconciliation` fail with `FAIL 3`; restoration passed the targeted test and final Gold suite. Trino listed exactly 20 task tables and RustFS listed 109 task-prefix Iceberg objects before cleanup. |
 
 ### Issues
 #### IMP-006/B01
-- State: OPEN
+- State: RESOLVED
 - Category: ENVIRONMENT
 - Affects: mandatory PRECHECK and safe diff-attribution gate
-- Problem: the starting working tree is not clean and contains changes that predate IMP-006, so this run cannot safely attribute or isolate the task diff without user action or explicit authorization.
-- Evidence: at baseline HEAD `345be2c0dca8cbc8e4505241f84bf882b13a7ebd`, `git status --short --untracked-files=all` reported modified `docs/status.md` and untracked `dbt/scripts/__pycache__/load_fixtures.cpython-312.pyc`; the pre-existing status diff changes IMP-005 from `REVIEW_READY` to `DONE` and updates its next action.
-- Unblock: user commits/removes the pre-existing paths, or explicitly authorizes a safe isolation strategy that preserves them; then rerun IMP-006 from a distinguishable baseline.
-- Resolution: pending
+- Problem: the prior attempt started from a working tree with changes that predated IMP-006, so that run could not safely attribute or isolate the task diff.
+- Evidence: at the prior baseline HEAD `345be2c0dca8cbc8e4505241f84bf882b13a7ebd`, `git status --short --untracked-files=all` reported modified `docs/status.md` and untracked `dbt/scripts/__pycache__/load_fixtures.cpython-312.pyc`.
+- Unblock: start a new attempt from a clean, distinguishable baseline after preserving or removing the prior changes.
+- Resolution: current baseline `d1041724a6a9841968f991755985830f16b91bdb` has an empty `git status --short --untracked-files=all`; the prior status update is committed and the generated Python cache is absent.
+
+#### IMP-006/B02
+- State: RESOLVED
+- Category: TEST
+- Affects: runtime acceptance evidence collection
+- Problem: the stack reached healthy state, but the first post-start assertion expected default `docker compose ps` output to include exited one-shot setup services.
+- Evidence: `docker compose up -d --wait --wait-timeout 240 rustfs polaris trino` completed in 41 seconds with RustFS, Polaris, and Trino healthy and both setup jobs reported exited; the following wrapper exited 1 because default `docker compose ps --format json` listed only the three running services.
+- Unblock: inspect running health and one-shot exit codes with commands that include stopped services, then continue runtime checks without restarting the healthy stack.
+- Resolution: `docker compose ps -a --format json` verified all five services, the three runtime services healthy, and both one-shot setup services at exit code 0.
+
+#### IMP-006/B03
+- State: RESOLVED
+- Category: TEST
+- Affects: runtime query-readiness preflight
+- Problem: the first Trino readiness wrapper compared CSV output to an unquoted scalar and exited 1 after the query itself succeeded.
+- Evidence: the diagnostic rerun showed Trino exit 0 with CSV rows `"_col0"` and `"1"`.
+- Unblock: parse the CSV output rather than comparing its quoted wire representation.
+- Resolution: the corrected CSV parser asserted the exact header/value rows and printed `trino_query_ready=yes`.
+
+#### IMP-006/B04
+- State: RESOLVED
+- Category: TEST
+- Affects: mandatory EVIDENCE_GATE mutation assertion for AC-010
+- Problem: the first route-aggregate mutation wrapper required exactly `FAIL 1`, although the full-outer-join contract can return both the unexpected actual row and missing expected row for one changed aggregate.
+- Evidence: the aggregate update changed one `R1-V2` row and the named dbt test returned non-zero; the wrapper restored the model to `completed_package_count=2` before exiting 1 at its overly narrow log assertion.
+- Unblock: rerun the same single-row mutation and require a positive failure count for the exact named test, one selected test, and no compilation/database error; then confirm final restoration.
+- Resolution: the corrected wrapper observed only `FAIL 2 assert_baseline_gold_route_version_efficiency_contract`, restored the model, and the final targeted tests plus all 43 Gold tests passed.
+
+#### IMP-006/B05
+- State: RESOLVED
+- Category: REVIEW
+- Affects: mandatory STATUS_RECORD and FRESH_READ_ONLY_REVIEW gates
+- Problem: the first reviewer returned `VERDICT: OK`, but `Progress/Remaining` still described that now-completed review as pending; correcting Progress is outside the narrow post-review finalization exception.
+- Evidence: the fresh reviewer found no blocker and returned `VERDICT: OK`, while the reviewed section still contained `Remaining: independent fresh read-only review only`.
+- Unblock: set `Remaining` to `none`, validate the status/diff, and obtain one fresh targeted re-review of the corrected section.
+- Resolution: `Remaining` is `none`; the status/diff gate passed, and the second fresh reviewer confirmed the corrected section, unchanged implementation/evidence, counters, and preservation of prior task sections with `VERDICT: OK`.
 
 ### Review
-- Verdict: NOT_RUN
-- Calls: 0
-- Fix iterations: 0
-- Details: independent review was not reached because PRECHECK blocked implementation.
+- Verdict: OK
+- Calls: 2
+- Fix iterations: 1
+- Details: the first fresh read-only reviewer inspected the complete implementation/status diff and returned `VERDICT: OK` with no BLOCKER or DEFERRED. After the required Progress correction, the second fresh targeted reviewer confirmed the complete corrected diff, evidence, counters, and unchanged prior task sections with `VERDICT: OK`. IMPROVEMENT: make the Gold reconciliation test independently validate that duplicated event IDs have one payload fingerprint; the existing Silver conflict test and full 128-node build already enforce this, so it is non-blocking.
 
 ### Next action
-User resolves or explicitly authorizes safe isolation of the pre-existing `docs/status.md` and `dbt/scripts/__pycache__/load_fixtures.cpython-312.pyc` changes, then reruns IMP-006.
+User authorized staging and committing this reviewed checkpoint; no push or transition to IMP-007 is authorized.

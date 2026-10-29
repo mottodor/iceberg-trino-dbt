@@ -58,3 +58,51 @@ models:
         data_tests: [not_null]
       - name: completed_dwell_hours
         data_tests: [not_null]
+
+  - name: gold_route_version_efficiency
+    description: Package delivery efficiency aggregated at one row per SCD2 route-plan version.
+    columns:
+      - name: route_id
+        data_tests: [not_null]
+      - name: route_version_id
+        data_tests:
+          - not_null
+          - unique
+          - relationships:
+              arguments:
+                to: ref('silver_route_plan_versions')
+                field: route_version_id
+      - name: package_count
+        data_tests: [not_null]
+      - name: completed_package_count
+        data_tests: [not_null]
+      - name: active_package_count
+        data_tests: [not_null]
+      - name: on_time_completed_package_count
+        data_tests: [not_null]
+
+  - name: gold_route_version_hub_dwell
+    description: Completed hub visits aggregated by SCD2 route-plan version and hub; open visits are excluded.
+    columns:
+      - name: route_id
+        data_tests: [not_null]
+      - name: route_version_id
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('silver_route_plan_versions')
+                field: route_version_id
+      - name: hub_code
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('bronze_hubs')
+                field: hub_code
+      - name: completed_visit_count
+        data_tests: [not_null]
+      - name: completed_dwell_hours
+        data_tests: [not_null]
+      - name: average_completed_dwell_hours
+        data_tests: [not_null]
