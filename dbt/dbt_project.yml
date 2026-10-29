@@ -1,0 +1,12 @@
+name: iceberg_trino_dbt
+version: 1.0.0
+config-version: 2
+
+profile: iceberg_trino_dbt
+
+model-paths: ["models"]
+test-paths: ["tests"]
+
+models:
+  iceberg_trino_dbt:
+    +materialized: table

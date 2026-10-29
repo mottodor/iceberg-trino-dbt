@@ -54,3 +54,68 @@
 
 ### Next action
 User authorized staging and committing this reviewed checkpoint; no push or transition to another task is authorized.
+
+## TASK_ID: PROBE-002
+
+- Source: `docs/bootstrap.md`, section 4.4, “PROBE-002 — dbt adapter handshake”
+- Status: REVIEW_READY
+- Updated: 2026-10-29T11:22:09+03:00
+- Baseline HEAD: 0fe79f1897e1310b35265c29e908b718c9493f05
+
+### Progress
+- Implemented: added the pinned Python dbt image definition, hash-locked dependency set, environment-driven Trino profile, one smoke model, and one exact-row singular test; the final image builds with Git, reports exact versions, parses one model/test, passes `dbt debug`, creates the Iceberg table, and passes the test. A deliberate extra-row mutation produced the intended named test failure; after enabling task-owned Polaris purge support, the model/test were restored and passed again. Trino showed one exact row and only the smoke schema/table; RustFS showed five Iceberg objects under the smoke prefix.
+- Remaining: none.
+
+### AC evidence
+| AC / ссылка на источник | Result | Проверка / evidence / причина |
+|---|---|---|
+| `docs/bootstrap.md` §4.4 PROBE-002, expected signal: exact dbt versions | PASS | acceptance: final rebuilt image `dbt --version` exited 0 and reported dbt Core `1.11.11` and Trino plugin `1.10.2` exactly. |
+| `docs/bootstrap.md` §4.4 PROBE-002, expected signal: successful connection | PASS | acceptance: final rebuilt image `dbt debug` exited 0 with valid profile/project, Git dependency found, Trino adapter `1.10.2`, `[OK connection ok]`, and `All checks passed!`. |
+| `docs/bootstrap.md` §4.4 PROBE-002, expected signal: smoke model and test | PASS | acceptance: final-state `dbt run --select probe002_smoke` exited 0 with `CREATE TABLE (1 rows)` and `dbt test --select assert_probe002_smoke` exited 0 with exactly one PASS; Trino returned only `(1, 'dbt-adapter-ok')`, only schema/table `probe002_smoke`, and RustFS contained five objects (14,800 bytes) under that prefix. Mutation probe inserted an extra row and the wrapper passed only after dbt exited 1 with `FAIL 2 assert_probe002_smoke`; rerun restored the final PASS. |
+| `docs/bootstrap.md` §4.4 PROBE-002, cleanup | PASS | acceptance: `DROP SCHEMA polaris.probe002_smoke CASCADE` exited 0; follow-up checks found no smoke schema and zero objects under its RustFS prefix while the project bucket remained. `docker compose down` exited 0, removed only task-owned containers/network, and preserved `iceberg-trino-dbt-probe002_rustfs-data`; the pre-existing PROBE-001 volume was untouched. |
+
+### Issues
+#### PROBE-002/B01
+- State: RESOLVED
+- Category: TEST
+- Affects: mandatory fast-check and EVIDENCE_GATE before runtime acceptance
+- Problem: the first containerized parse command used unsupported dbt global option `--target-path`, so project parsing did not execute.
+- Evidence: `dbt ... --target-path /tmp/target parse ...` exited 2 with `No such option '--target-path'` under dbt Core 1.11.11.
+- Unblock: direct dbt artifacts with supported project configuration/environment and rerun parse before stack acceptance.
+- Resolution: `DBT_TARGET_PATH=/tmp/target dbt parse` exited 0; `dbt ls --select probe002_smoke assert_probe002_smoke --output name` exited 0 and reported exactly one model and one test.
+
+#### PROBE-002/B02
+- State: RESOLVED
+- Category: ENVIRONMENT
+- Affects: `docs/bootstrap.md` §4.4 PROBE-002 connection/model/test acceptance
+- Problem: the first isolated stack start stopped before Polaris/Trino because Compose split the temporary bucket bootstrap shell command into AWS CLI arguments.
+- Evidence: `docker compose ... up -d --wait` exited 1 in 7 seconds; `bucket-setup` exited 252 with AWS CLI `the following arguments are required: command`; container inspection showed the shell command had been split into `Cmd` words.
+- Unblock: encode the temporary bucket bootstrap as one shell argument, recreate only the failed task-owned containers, and rerun the same isolated stack.
+- Resolution: after encoding each bootstrap script as one shell argument, `docker compose ... up -d --wait --wait-timeout 240` exited 0 in 31 seconds; RustFS, Polaris, and Trino became healthy and both setup jobs completed successfully.
+
+#### PROBE-002/B03
+- State: RESOLVED
+- Category: CODE
+- Affects: `docs/bootstrap.md` §4.4 PROBE-002 expected successful `dbt debug`
+- Problem: the first runtime `dbt debug` connected successfully to Trino but exited non-zero because the execution image omitted dbt's required `git` executable.
+- Evidence: containerized `dbt debug` reported valid project/profile, adapter `1.10.2`, and `[OK connection ok]`, then exited 1 with `Could not find command ... git`.
+- Unblock: add the minimal Git runtime package to the dbt image, rebuild it, and rerun version/parse/debug checks before model acceptance.
+- Resolution: added the minimal Git runtime package, rebuilt the image, then reran `dbt --version`, `dbt parse`, and networked `dbt debug`; all exited 0 and debug ended with `All checks passed!`.
+
+#### PROBE-002/B04
+- State: RESOLVED
+- Category: ENVIRONMENT
+- Affects: final-state model/test evidence and mandatory cleanup
+- Problem: after the successful mutation test, rerunning the table model failed while dbt attempted to drop its Iceberg backup relation, so the smoke schema is not yet restored to a verified final state.
+- Evidence: the restoration `dbt run --select probe002_smoke` exited 1 with Trino `ICEBERG_CATALOG_ERROR: Failed to drop table 'probe002_smoke__dbt_backup'` after the initial model and positive test had passed and the mutation correctly produced `FAIL 2 assert_probe002_smoke`.
+- Unblock: inspect the Trino/Polaris error and current relation state, apply the minimal environment/profile correction or targeted cleanup within the task-owned smoke schema, then rerun model and test before final cleanup.
+- Resolution: Polaris logs showed the task-owned catalog rejected dbt's backup-table purge with HTTP 403 because `polaris.config.drop-with-purge.enabled` was absent. Updating that catalog property, dropping only the smoke backup table, and rerunning the model/test produced exit 0; Trino then returned the one expected row and one smoke table.
+
+### Review
+- Verdict: OK
+- Calls: 1
+- Fix iterations: 0
+- Details: one fresh read-only reviewer inspected the full tracked/untracked diff, every new file including the hash lock, `docs/status.md`, the PROBE-001 section boundary, source AC, and supplied runtime evidence; it found no BLOCKER or IMPROVEMENT and returned `VERDICT OK`. DEFERRED: BOOT-ENV-002 must persist `polaris.config.drop-with-purge.enabled=true` and verify two consecutive table materializations; the reviewer confirmed this is not a PROBE-002 blocker.
+
+### Next action
+After committing this user-authorized reviewed checkpoint, await separate authorization for push or transition to another task.

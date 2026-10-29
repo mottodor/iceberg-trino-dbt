@@ -1,0 +1,13 @@
+iceberg_trino_dbt:
+  target: smoke
+  outputs:
+    smoke:
+      type: trino
+      method: none
+      user: "{{ env_var('DBT_TRINO_USER') }}"
+      host: "{{ env_var('DBT_TRINO_HOST') }}"
+      port: "{{ env_var('DBT_TRINO_PORT') | int }}"
+      database: "{{ env_var('DBT_TRINO_CATALOG') }}"
+      schema: "{{ env_var('DBT_TRINO_SCHEMA') }}"
+      http_scheme: http
+      threads: 1
