@@ -1053,3 +1053,40 @@ User reviews the checkpoint and, if accepted, stages and commits `scripts/run_sc
 
 ### Next action
 User reviews the checkpoint and, if accepted, stages and commits `scripts/run_schema_evolution_acceptance.py` and `docs/status.md`; no push or transition to SE-IMP-004 is authorized.
+
+## TASK_ID: SE-IMP-004
+
+- Source: `docs/bootstrap-schema-evolution.md` §5.3, “SE-IMP-004 — reader/writer compatibility и S1”; `docs/spec.md` AC-016, AC-017 and AC-020
+- Status: REVIEW_READY
+- Updated: 2026-10-30T00:27:58+03:00
+- Baseline HEAD: 12bf88fc065fe085f382ee72236094ae2cbd893f
+
+### Progress
+- Implemented: added current-schema P1–P4 row/type assertions, full before/after invariant capture for the expected old-name writer failure, correct `EVO-P5` insert, direct S0→S1 snapshot-chain validation, retained-S0/new-file checks, metadata validation, and the next-slice incomplete gate. Fast checks and isolated run `seimp004_compat` passed the SE-IMP-004 assertions; cleanup restored the initially stopped Compose state and preserved the pre-existing project volume. After review, the old-name diagnostic gate was hardened and replayed against the saved failure plus unrelated-error mutations.
+- Remaining: none.
+
+### AC evidence
+| AC / ссылка на источник | Result | Проверка / evidence / причина |
+|---|---|---|
+| `docs/spec.md` AC-016; `docs/bootstrap-schema-evolution.md` §5.3 SE-IMP-004 | PASS | acceptance: run `seimp004_compat` read the evolved table through the explicit seven-column current schema and returned exact P1–P4 values; `delivery_priority` was `NULL`, statuses/counts were preserved, and `completed_visit_count` was `BIGINT`. The final metadata retained the expected field IDs and nullable priority field. |
+| `docs/spec.md` AC-017; `docs/bootstrap-schema-evolution.md` §5.3 SE-IMP-004 | PASS | acceptance/targeted replay: the old-name INSERT exited 1 with `Insert column name does not exist in target table: delivery_status`; the final diagnostic helper accepted that saved output and rejected success plus two unrelated-error mutations. Complete before/after schema, rows, snapshots, metadata, objects and SHA-256 file identities had zero mismatches. The correct `EVO-P5` insert produced exact five-row output and direct S0 `683260960248810578` → S1 `1122032600352381225` parentage, preserving the four-record S0 file and adding exactly one new record. |
+| `docs/spec.md` AC-020, SE-IMP-004 contribution | PASS | fast/acceptance: LSP diagnostics, `py_compile`, CLI, helper mutation probes and `git diff --check` passed. The isolated run recorded AC-013–AC-017 PASS, intentionally left AC-018–AC-020 NOT_RUN with `continue with SE-IMP-005`, matched all nine core contracts, completed a clean secret scan and 710-file manifest, removed all task schemas/objects/containers/network, and preserved the pre-existing project volume. |
+
+### Issues
+#### SE-IMP-004/B01
+- State: RESOLVED
+- Category: TEST
+- Affects: mandatory FINAL_EVIDENCE_AND_DIFF_GATE
+- Problem: the first post-acceptance evidence wrapper assumed the manifest root was a JSON list, so it stopped after validating the business evidence but before confirming the manifest count.
+- Evidence: the wrapper raised `AssertionError`; direct inspection showed `evidence_manifest.json` is the valid object shape `{"files": [...]}` with 710 entries, matching the inherited runner contract.
+- Unblock: assert the existing manifest object shape and file list, rerun the complete evidence wrapper without repeating acceptance, then record the confirmed result.
+- Resolution: the corrected wrapper validated all AC-016/017 rows, snapshot/file/metadata invariants, old-name failure atomicity, core comparison, cleanup, clean secret scan and the exact 710-file manifest; it printed `acceptance_evidence=pass`.
+
+### Review
+- Verdict: OK
+- Calls: 2
+- Fix iterations: 1
+- Details: the first fresh read-only reviewer inspected the complete diff and saved evidence, found no BLOCKER or DEFERRED and returned `VERDICT OK`; it suggested hardening the old-name diagnostic and narrowing the volume wording. After the targeted fix and evidence replay, the second fresh reviewer rechecked the complete post-fix diff, final status section and saved acceptance evidence, found no issues, confirmed the evidence remained applicable, and returned `VERDICT OK`.
+
+### Next action
+User reviews the checkpoint and, if accepted, stages and commits `scripts/run_schema_evolution_acceptance.py` and `docs/status.md`; no push or transition to SE-IMP-005 is authorized.

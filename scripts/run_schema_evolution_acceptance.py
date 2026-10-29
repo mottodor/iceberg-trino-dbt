@@ -99,6 +99,30 @@ EVOLVED_ICEBERG_TYPES = {
     "delivery_duration_hours": "double",
     "is_on_time": "boolean",
 }
+EVOLVED_ROWS_HEADER = [
+    "package_id",
+    "route_version_id",
+    "delivery_priority",
+    "current_status",
+    "completed_visit_count",
+    "delivery_duration_hours",
+    "is_on_time",
+]
+EVOLVED_S0_ROWS = [
+    ["P1", "R1-V1", "NULL", "delivered", "1", "48.0", "true"],
+    ["P2", "R1-V2", "NULL", "delivered", "3", "48.0", "false"],
+    ["P3", "R1-V2", "NULL", "delivered", "2", "36.0", "true"],
+    ["P4", "R1-V2", "NULL", "arrived_at_hub", "0", "NULL", "NULL"],
+]
+EVO_P5_ROW = [
+    "EVO-P5",
+    "R1-V2",
+    "express",
+    "delivered",
+    "1",
+    "24.0",
+    "true",
+]
 
 
 def core_contract_mismatches(
@@ -302,6 +326,80 @@ def file_identity_mismatches(
     )
 
 
+def assert_evolved_rows(rows: list[list[str]], *, include_evo_p5: bool) -> None:
+    """Validate current-schema rows while accepting equivalent DOUBLE rendering."""
+    expected_rows = [*EVOLVED_S0_ROWS]
+    if include_evo_p5:
+        expected_rows = [EVO_P5_ROW, *expected_rows]
+    if not rows or rows[0] != EVOLVED_ROWS_HEADER or len(rows) != len(expected_rows) + 1:
+        raise AcceptanceError(f"unexpected evolved rows: {rows}")
+    for actual, expected in zip(rows[1:], expected_rows, strict=True):
+        if len(actual) != 7 or actual[:5] != expected[:5] or actual[6] != expected[6]:
+            raise AcceptanceError(f"unexpected evolved row: {actual}")
+        if expected[5] == "NULL":
+            if actual[5] != "NULL":
+                raise AcceptanceError(f"unexpected evolved duration: {actual}")
+            continue
+        try:
+            actual_duration = float(actual[5])
+            expected_duration = float(expected[5])
+        except ValueError as error:
+            raise AcceptanceError(f"invalid evolved duration: {actual}") from error
+        if actual_duration != expected_duration:
+            raise AcceptanceError(f"unexpected evolved duration: {actual}")
+
+
+def parse_s1_snapshots(rows: list[list[str]], s0_snapshot_id: int) -> int:
+    """Validate the direct S0 to S1 append chain and return the generated S1 ID."""
+    expected_header = ["snapshot_id", "parent_id", "operation"]
+    if not rows or rows[0] != expected_header or len(rows) != 3:
+        raise AcceptanceError(f"expected exactly S0 and S1 snapshots, got: {rows}")
+    parsed_rows = []
+    for snapshot_id, parent_id, operation in rows[1:]:
+        try:
+            parsed_snapshot_id = int(snapshot_id)
+            parsed_parent_id = int(parent_id) if parent_id else None
+        except ValueError as error:
+            raise AcceptanceError(f"invalid snapshot chain row: {snapshot_id, parent_id}") from error
+        if parsed_snapshot_id <= 0 or operation.lower() != "append":
+            raise AcceptanceError(f"invalid snapshot chain row: {snapshot_id, parent_id, operation}")
+        parsed_rows.append((parsed_snapshot_id, parsed_parent_id))
+    roots = [snapshot_id for snapshot_id, parent_id in parsed_rows if parent_id is None]
+    children = [
+        snapshot_id
+        for snapshot_id, parent_id in parsed_rows
+        if parent_id == s0_snapshot_id
+    ]
+    if roots != [s0_snapshot_id] or len(children) != 1 or children[0] == s0_snapshot_id:
+        raise AcceptanceError(f"invalid S0/S1 snapshot chain: {rows}")
+    return children[0]
+
+
+def compatibility_state_mismatches(
+    expected: dict[str, Any],
+    actual: dict[str, Any],
+) -> list[str]:
+    """Return compatibility-state components changed by an expected failure."""
+    return sorted(
+        name
+        for name in expected.keys() | actual.keys()
+        if expected.get(name) != actual.get(name)
+    )
+
+
+def assert_old_name_insert_failure(returncode: int, output: str) -> None:
+    """Require the expected missing-target-column failure for the legacy name."""
+    normalized = output.lower()
+    if (
+        returncode == 0
+        or "insert column name does not exist in target table" not in normalized
+        or "delivery_status" not in normalized
+    ):
+        raise AcceptanceError(
+            "old-name INSERT did not fail with the missing delivery_status column"
+        )
+
+
 class SchemaEvolutionAcceptanceRun(AcceptanceRun):
     """Lifecycle and safety boundary for the schema-evolution slice."""
 
@@ -311,8 +409,10 @@ class SchemaEvolutionAcceptanceRun(AcceptanceRun):
         self.negative_prefixes = {}
         self.evolution_schema = f"{run_id}_evolution"
         self.s0_snapshot_id: int | None = None
+        self.s1_snapshot_id: int | None = None
         self.s0_file_identities: list[dict[str, Any]] = []
         self.s0_metadata_summary: dict[str, Any] = {}
+        self.evolved_metadata_summary: dict[str, Any] = {}
 
     def run(self) -> None:
         self.preflight()
@@ -422,6 +522,11 @@ class SchemaEvolutionAcceptanceRun(AcceptanceRun):
             ac for ac in SCHEMA_EVOLUTION_ACS if self.ac_results[ac] != "PASS"
         ]
         if pending:
+            next_task = (
+                "SE-IMP-005"
+                if self.ac_results["AC-016"] == self.ac_results["AC-017"] == "PASS"
+                else "SE-IMP-004"
+            )
             self.write_json(
                 "evolution/pending.json",
                 {
@@ -431,12 +536,12 @@ class SchemaEvolutionAcceptanceRun(AcceptanceRun):
                         if self.ac_results[ac] == "PASS"
                     ],
                     "pending": pending,
-                    "next_task": "SE-IMP-004",
+                    "next_task": next_task,
                 },
             )
             raise AcceptanceError(
-                "schema-evolution exercise is incomplete after metadata-only DDL; "
-                "continue with SE-IMP-004"
+                "schema-evolution exercise is incomplete after reader/writer compatibility; "
+                f"continue with {next_task}"
             )
 
     def run_schema_evolution_steps(self) -> None:
@@ -469,6 +574,7 @@ class SchemaEvolutionAcceptanceRun(AcceptanceRun):
         self.ac_results["AC-014"] = "PASS"
         self.run_metadata_only_ddl_checkpoints()
         self.ac_results["AC-015"] = "PASS"
+        self.run_reader_writer_compatibility()
 
     def evolution_table_name(self) -> str:
         return f'"{CATALOG}"."{self.evolution_schema}"."{EVOLUTION_TABLE}"'
@@ -735,6 +841,7 @@ class SchemaEvolutionAcceptanceRun(AcceptanceRun):
             summaries.append(summary)
             previous_schema_id = summary["metadata"]["current_schema_id"]
             previous_metadata_key = summary["metadata"]["object_key"]
+        self.evolved_metadata_summary = summaries[-1]["metadata"]
         self.write_json("evolution/ddl/checkpoints.json", summaries)
 
     def capture_metadata_only_checkpoint(
@@ -974,6 +1081,379 @@ class SchemaEvolutionAcceptanceRun(AcceptanceRun):
         }
         self.write_json(f"{root}/invariant_bundle.json", summary)
         return summary
+
+    def run_reader_writer_compatibility(self) -> None:
+        """Prove current-schema reads, old-name rejection, and the S1 append."""
+        before_failure = self.capture_compatibility_state(
+            "evolution/compatibility/current_schema_s0",
+            include_evo_p5=False,
+            snapshot_stage="s0",
+        )
+        self.ac_results["AC-016"] = "PASS"
+
+        old_name_sql = f"""
+            INSERT INTO {self.evolution_table_name()} (
+                package_id,
+                route_version_id,
+                delivery_status,
+                completed_visit_count,
+                delivery_duration_hours,
+                is_on_time
+            ) VALUES ('EVO-P5', 'R1-V2', 'delivered', 1, 24, true)
+        """
+        failure_result = self.run_command(
+            [
+                "docker",
+                "compose",
+                "exec",
+                "-T",
+                "trino",
+                "trino",
+                "--execute",
+                normalize_sql(old_name_sql),
+            ],
+            "evolution/writer/old_name_insert.log",
+            allowed_returncodes=set(range(1, 256)),
+        )
+        failure_output = failure_result.stdout + failure_result.stderr
+        assert_old_name_insert_failure(failure_result.returncode, failure_output)
+        self.write_json(
+            "evolution/writer/old_name_failure.json",
+            {
+                "returncode": failure_result.returncode,
+                "diagnostic_matches_missing_column": True,
+            },
+        )
+
+        after_failure = self.capture_compatibility_state(
+            "evolution/writer/old_name_after",
+            include_evo_p5=False,
+            snapshot_stage="s0",
+        )
+        failure_mismatches = compatibility_state_mismatches(
+            before_failure,
+            after_failure,
+        )
+        self.write_json(
+            "evolution/writer/old_name_comparison.json",
+            {
+                "before": "evolution/compatibility/current_schema_s0",
+                "after": "evolution/writer/old_name_after",
+                "mismatches": failure_mismatches,
+            },
+        )
+        if failure_mismatches:
+            raise AcceptanceError(
+                "old-name INSERT changed table state: "
+                + ", ".join(failure_mismatches)
+            )
+
+        self.execute_sql(
+            "evolution/writer/insert_evo_p5.log",
+            f"""
+            INSERT INTO {self.evolution_table_name()} (
+                package_id,
+                route_version_id,
+                delivery_priority,
+                current_status,
+                completed_visit_count,
+                delivery_duration_hours,
+                is_on_time
+            ) VALUES ('EVO-P5', 'R1-V2', 'express', 'delivered', 1, 24, true)
+            """,
+        )
+        s1_state = self.capture_compatibility_state(
+            "evolution/s1",
+            include_evo_p5=True,
+            snapshot_stage="s1",
+        )
+        self.s1_snapshot_id = s1_state["current_snapshot_id"]
+        self.write_json(
+            "evolution/s1/snapshot_identity.json",
+            {
+                "S0": self.s0_snapshot_id,
+                "S1": self.s1_snapshot_id,
+                "parent_id": self.s0_snapshot_id,
+            },
+        )
+        self.ac_results["AC-017"] = "PASS"
+
+    def capture_compatibility_state(
+        self,
+        root: str,
+        *,
+        include_evo_p5: bool,
+        snapshot_stage: str,
+    ) -> dict[str, Any]:
+        """Capture and validate schema, rows, snapshots, files, and metadata."""
+        if self.s0_snapshot_id is None or not self.evolved_metadata_summary:
+            raise AcceptanceError("evolved S0 state is unavailable")
+        if snapshot_stage not in {"s0", "s1"}:
+            raise AcceptanceError(f"invalid compatibility snapshot stage: {snapshot_stage}")
+
+        evolution_table = self.evolution_table_name()
+        columns = self.query_csv(
+            f"{root}/columns.csv",
+            f"""
+            SELECT column_name, data_type, ordinal_position
+            FROM {CATALOG}.information_schema.columns
+            WHERE table_schema = '{self.evolution_schema}'
+              AND table_name = '{EVOLUTION_TABLE}'
+            ORDER BY ordinal_position
+            """,
+        )
+        expected_columns = [
+            ["column_name", "data_type", "ordinal_position"],
+            *[
+                [name, data_type, str(position)]
+                for position, (name, data_type) in enumerate(EVOLVED_COLUMNS, start=1)
+            ],
+        ]
+        if columns != expected_columns:
+            raise AcceptanceError(f"unexpected compatibility columns: {columns}")
+
+        rows = self.query_csv(
+            f"{root}/rows.csv",
+            f"""
+            SELECT
+                package_id,
+                route_version_id,
+                COALESCE(delivery_priority, 'NULL') AS delivery_priority,
+                current_status,
+                CAST(completed_visit_count AS varchar) AS completed_visit_count,
+                COALESCE(CAST(delivery_duration_hours AS varchar), 'NULL') AS delivery_duration_hours,
+                COALESCE(CAST(is_on_time AS varchar), 'NULL') AS is_on_time
+            FROM {evolution_table}
+            ORDER BY package_id
+            """,
+        )
+        assert_evolved_rows(rows, include_evo_p5=include_evo_p5)
+
+        snapshots = self.query_csv(
+            f"{root}/snapshots.csv",
+            f"""
+            SELECT
+                CAST(snapshot_id AS varchar) AS snapshot_id,
+                COALESCE(CAST(parent_id AS varchar), '') AS parent_id,
+                operation
+            FROM {self.evolution_metadata_table('snapshots')}
+            ORDER BY committed_at, snapshot_id
+            """,
+        )
+        if snapshot_stage == "s0":
+            current_snapshot_id = parse_s0_snapshot(snapshots)
+            if current_snapshot_id != self.s0_snapshot_id:
+                raise AcceptanceError(
+                    f"compatibility state changed S0: {current_snapshot_id} != {self.s0_snapshot_id}"
+                )
+        else:
+            current_snapshot_id = parse_s1_snapshots(
+                snapshots,
+                self.s0_snapshot_id,
+            )
+
+        file_rows = self.query_csv(
+            f"{root}/files.csv",
+            f"""
+            SELECT
+                file_path,
+                file_format,
+                CAST(record_count AS varchar) AS record_count,
+                CAST(file_size_in_bytes AS varchar) AS file_size_in_bytes
+            FROM {self.evolution_metadata_table('files')}
+            ORDER BY file_path
+            """,
+        )
+        expected_file_header = [
+            "file_path",
+            "file_format",
+            "record_count",
+            "file_size_in_bytes",
+        ]
+        if not file_rows or file_rows[0] != expected_file_header or len(file_rows) < 2:
+            raise AcceptanceError(f"compatibility state has no data files: {file_rows}")
+
+        objects = self.list_objects(f"warehouse/{self.evolution_schema}/")
+        self.write_json(f"{root}/objects.json", objects)
+        object_rows = objects.get("Contents") or []
+        if not isinstance(object_rows, list) or not object_rows:
+            raise AcceptanceError(f"compatibility object listing is empty: {root}")
+        objects_by_key: dict[str, dict[str, Any]] = {}
+        object_identities = []
+        for item in object_rows:
+            if not isinstance(item, dict) or not isinstance(item.get("Key"), str):
+                raise AcceptanceError(f"invalid compatibility object: {item}")
+            key = item["Key"]
+            if key in objects_by_key:
+                raise AcceptanceError(f"duplicate compatibility object key: {key}")
+            objects_by_key[key] = item
+            object_identities.append(
+                {
+                    "key": key,
+                    "size": item.get("Size"),
+                    "etag": item.get("ETag"),
+                }
+            )
+        object_identities.sort(key=lambda item: item["key"])
+
+        file_identities = []
+        for file_path, file_format, record_count, file_size in file_rows[1:]:
+            object_key = self.object_key(file_path)
+            object_row = objects_by_key.get(object_key)
+            try:
+                parsed_record_count = int(record_count)
+                parsed_file_size = int(file_size)
+                object_size = object_row.get("Size") if object_row is not None else None
+                if not isinstance(object_size, int):
+                    raise TypeError("object size is not an integer")
+            except (TypeError, ValueError) as error:
+                raise AcceptanceError(
+                    f"invalid compatibility file metrics: {file_rows}"
+                ) from error
+            if (
+                file_format.upper() != "PARQUET"
+                or parsed_record_count <= 0
+                or parsed_file_size <= 0
+                or parsed_file_size != object_size
+            ):
+                raise AcceptanceError(f"invalid compatibility data file: {file_path}")
+            file_identities.append(
+                {
+                    "file_path": file_path,
+                    "object_key": object_key,
+                    "file_format": file_format.upper(),
+                    "record_count": parsed_record_count,
+                    "size": parsed_file_size,
+                    "sha256": self.object_sha256(object_key),
+                }
+            )
+
+        actual_by_path = {
+            item["file_path"]: item
+            for item in file_identities
+        }
+        retained_s0_files = [
+            actual_by_path[path]
+            for path in (item["file_path"] for item in self.s0_file_identities)
+            if path in actual_by_path
+        ]
+        s0_mismatches = file_identity_mismatches(
+            self.s0_file_identities,
+            retained_s0_files,
+        )
+        if s0_mismatches:
+            raise AcceptanceError(
+                "compatibility state changed S0 data files: "
+                + ", ".join(s0_mismatches)
+            )
+        total_records = sum(item["record_count"] for item in file_identities)
+        new_records = sum(
+            item["record_count"]
+            for item in file_identities
+            if item["file_path"] not in {
+                s0_file["file_path"] for s0_file in self.s0_file_identities
+            }
+        )
+        expected_total_records = 5 if include_evo_p5 else 4
+        expected_new_records = 1 if include_evo_p5 else 0
+        if (
+            total_records != expected_total_records
+            or new_records != expected_new_records
+        ):
+            raise AcceptanceError(
+                "unexpected compatibility file record counts: "
+                f"total={total_records}, new={new_records}"
+            )
+
+        metadata_log = self.query_csv(
+            f"{root}/metadata_log_entries.csv",
+            f"""
+            SELECT
+                CAST(timestamp AS varchar) AS committed_at,
+                file,
+                CAST(latest_snapshot_id AS varchar) AS latest_snapshot_id,
+                CAST(latest_schema_id AS varchar) AS latest_schema_id,
+                CAST(latest_sequence_number AS varchar) AS latest_sequence_number
+            FROM {self.evolution_metadata_table('metadata_log_entries')}
+            ORDER BY timestamp, file
+            """,
+        )
+        latest_metadata = self.query_csv(
+            f"{root}/latest_metadata.csv",
+            f"""
+            SELECT
+                file,
+                CAST(latest_snapshot_id AS varchar) AS latest_snapshot_id
+            FROM {self.evolution_metadata_table('metadata_log_entries')}
+            ORDER BY timestamp DESC
+            LIMIT 1
+            """,
+        )
+        if (
+            not metadata_log
+            or len(latest_metadata) != 2
+            or latest_metadata[0] != ["file", "latest_snapshot_id"]
+        ):
+            raise AcceptanceError(f"invalid compatibility metadata log: {root}")
+        metadata_location, latest_snapshot_id = latest_metadata[1]
+        try:
+            parsed_latest_snapshot_id = int(latest_snapshot_id)
+        except ValueError as error:
+            raise AcceptanceError(
+                f"invalid compatibility metadata snapshot: {latest_snapshot_id}"
+            ) from error
+        if parsed_latest_snapshot_id != current_snapshot_id:
+            raise AcceptanceError(
+                "compatibility metadata/current snapshot mismatch: "
+                f"{parsed_latest_snapshot_id} != {current_snapshot_id}"
+            )
+        metadata_key = self.object_key(metadata_location)
+        if metadata_key not in objects_by_key:
+            raise AcceptanceError(
+                f"current compatibility metadata object is absent: {metadata_key}"
+            )
+        metadata_text = self.read_object_text(metadata_key)
+        self.write_text(f"{root}/metadata.json", metadata_text)
+        try:
+            metadata = json.loads(metadata_text)
+        except json.JSONDecodeError as error:
+            raise AcceptanceError(f"invalid compatibility metadata: {metadata_key}") from error
+        if not isinstance(metadata, dict):
+            raise AcceptanceError(f"invalid compatibility metadata root: {metadata_key}")
+        metadata_summary = parse_current_metadata(metadata, current_snapshot_id)
+        if (
+            list(metadata_summary["field_ids"]) != [name for name, _ in EVOLVED_COLUMNS]
+            or metadata_summary["field_types"] != EVOLVED_ICEBERG_TYPES
+            or metadata_summary["field_ids"]
+            != self.evolved_metadata_summary["field_ids"]
+            or metadata_summary["current_schema_id"]
+            != self.evolved_metadata_summary["current_schema_id"]
+            or metadata_summary["last_column_id"]
+            != self.evolved_metadata_summary["last_column_id"]
+            or metadata_summary["field_required"]["delivery_priority"]
+        ):
+            raise AcceptanceError(
+                f"unexpected compatibility metadata schema: {metadata_summary}"
+            )
+        comparable_metadata = {
+            **metadata_summary,
+            "object_key": metadata_key,
+            "size": len(metadata_text.encode("utf-8")),
+            "sha256": hashlib.sha256(metadata_text.encode("utf-8")).hexdigest(),
+        }
+
+        state = {
+            "columns": columns,
+            "rows": rows,
+            "snapshots": snapshots,
+            "file_identities": file_identities,
+            "object_identities": object_identities,
+            "metadata_log": metadata_log,
+            "metadata": comparable_metadata,
+            "current_snapshot_id": current_snapshot_id,
+        }
+        self.write_json(f"{root}/invariant_bundle.json", state)
+        return state
 
     def evolution_metadata_table(self, suffix: str) -> str:
         return (
