@@ -1353,3 +1353,49 @@ User reviews the checkpoint and, if accepted, stages and commits `docs/status.md
 
 ### Next action
 User reviews the checkpoint and, if accepted, stages and commits `docs/status.md`; no push or transition to PF-ENV-001 is authorized.
+
+## TASK_ID: PF-ENV-001
+
+- Source: `docs/bootstrap-partitioning-file-pruning.md` §5.2, “PF-ENV-001 — isolated acceptance entry point”
+- Status: REVIEW_READY
+- Updated: 2026-10-31T01:07:03+03:00
+- Baseline HEAD: e527f1a149f2752bee2c09c2d072a0b190c44dbe
+
+### Progress
+- Implemented: added the executable isolated partitioning/file-pruning runner with AC-021–AC-027 placeholders, exact benchmark namespace/table identities, inherited lifecycle/evidence finalization, ownership-gated cleanup, and atomic summary output.
+- Remaining: none.
+
+### AC evidence
+| AC / ссылка на источник | Result | Проверка / evidence / причина |
+|---|---|---|
+| `docs/bootstrap-partitioning-file-pruning.md` §5.2 PF-ENV-001, runner entry point and lifecycle/evidence contract | PASS | fast/standard: LSP diagnostics reported zero findings; `py_compile` passed for the core, schema-evolution and new runners; the new executable runner exposes AC-021–AC-027 slots, exact eight-table identities, inherited command/evidence/secret/manifest lifecycle and atomic PASS/FAIL summary behavior. An injected final-gate failure wrote atomic `outcome=FAIL` evidence and a manifest with no temporary summary left behind. |
+| `docs/bootstrap-partitioning-file-pruning.md` §5.2 PF-ENV-001, CLI/preflight refusal paths | PASS | fast: executable mode, `--help`, invalid run ID (exit 2), missing env (exit 1 before evidence creation), existing evidence-directory refusal (exit 1), shared-runner immutability and `git diff --check` all passed. |
+| `docs/bootstrap-partitioning-file-pruning.md` §5.2 PF-ENV-001, ownership-safe failure cleanup | PASS | standard: an in-memory lifecycle harness proved an exact pre-existing schema collision performs zero cleanup, while an injected failure after ownership performs exactly one cleanup. The real cleanup method targets only `<run_id>_partition_benchmark`, verifies exact schema absence and checks only `warehouse/<run_id>_partition_benchmark/`. |
+
+### Issues
+#### PF-ENV-001/B01
+- State: RESOLVED
+- Category: TEST
+- Affects: `docs/bootstrap-partitioning-file-pruning.md` §5.2 PF-ENV-001 lifecycle/evidence and ownership-safe cleanup checks
+- Problem: the first combined standard harness exited at an assertion, so its lifecycle/cleanup/atomic-summary evidence was incomplete.
+- Evidence: the Python harness exited 1 with `AssertionError` at line 128 after the fast checks had passed; no repository runtime service was started.
+- Unblock: isolate the failing assertion, correct the test or implementation as warranted, then rerun the complete standard harness.
+- Resolution: the failing assertion incorrectly expected AC slots to remain `NOT_RUN` after simulating a post-behavior final gate failure; the inherited contract correctly retains business AC `PASS` while the overall atomic summary is `FAIL`. The corrected complete harness passed lifecycle, exact cleanup scope, summary and manifest assertions.
+
+#### PF-ENV-001/B02
+- State: RESOLVED
+- Category: REVIEW
+- Affects: mandatory STATUS_RECORD and FRESH_READ_ONLY_REVIEW gates
+- Problem: after the successful first reviewer call, `Progress/Remaining` still described that completed review as pending; correcting Progress was outside the narrow post-review finalization exception.
+- Evidence: the first fresh reviewer returned `VERDICT OK` with no BLOCKER, while the reviewed section still contained `Remaining: independent fresh read-only review only`.
+- Unblock: set `Remaining` to `none`, validate the status/diff, and obtain one fresh targeted re-review of the corrected section.
+- Resolution: `Remaining` is `none`; the targeted status/diff gate and LSP diagnostics passed, and the second fresh reviewer confirmed the corrected section, complete diff, counters, evidence and unchanged prior sections with `VERDICT OK`.
+
+### Review
+- Verdict: OK
+- Calls: 2
+- Fix iterations: 1
+- Details: the first fresh read-only reviewer inspected the complete tracked/untracked diff and returned `VERDICT OK` with two non-blocking DEFERRED notes. After the required `Progress/Remaining` correction, the second fresh targeted reviewer verified B02 resolution, the complete corrected diff, status counters/evidence and preservation of prior sections; it found no BLOCKER or IMPROVEMENT and returned `VERDICT OK`. DEFERRED: before a future successful behavior workflow, add a slice-specific final PASS gate and exact-inventory residual-object cleanup fallback.
+
+### Next action
+User reviews the checkpoint and, if accepted, stages and commits `scripts/run_partitioning_file_pruning_acceptance.py` and `docs/status.md`; no push or transition to PF-ENV-002 is authorized.
