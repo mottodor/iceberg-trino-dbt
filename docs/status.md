@@ -1271,3 +1271,85 @@ User reviews the checkpoint and, if accepted, stages and commits `scripts/run_sc
 
 ### Next action
 User reviews the checkpoint and, if accepted, stages and commits `docs/status.md`; no push or transition to PART-PROBE-002 is authorized.
+
+## TASK_ID: PART-PROBE-002
+
+- Source: `docs/bootstrap-partitioning-file-pruning.md` §4.8, “PART-PROBE-002 — plan/stats capture”; supporting contract `docs/spec.md` §11.3–§11.7
+- Status: REVIEW_READY
+- Updated: 2026-10-31T00:41:59+03:00
+- Baseline HEAD: c3470bc8ab1a160833f4fa9e8b91018a473ede35
+
+### Progress
+- Implemented: started the isolated pinned stack; established ownership and the exact 3/3/2/2 route mapping; created balanced `U/D/R/DR`; captured exact results, distributed JSON, IO JSON and `EXPLAIN ANALYZE` for date/route/combined across all four layouts; matched IO estimates and runtime input rows to partition metadata; fixed a fail-closed parser/summary contract with mutation evidence and a bounded query-protocol fallback; removed the exact schema and residual object keys; restored the initially stopped environment.
+- Remaining: none.
+
+### AC evidence
+| AC / ссылка на источник | Result | Проверка / evidence / причина |
+|---|---|---|
+| `docs/bootstrap-partitioning-file-pruning.md` §4.8 PART-PROBE-002, one Iceberg scan and visible partition constraint | PASS | acceptance: all 12 query-layout captures contain exactly one task-schema `ScanProject`/`ScanFilterProject`; `EXPLAIN (TYPE IO, FORMAT JSON)` exposes the expected date/route query-column constraints and its output-row estimate exactly matches `$partitions` eligible records (date 256000/5120/256000/5120, route 256000/256000/51200/51200, combined 256000/5120/51200/1024 for U/D/R/DR). Trino 484 distributed descriptors visibly mark the day constraint but not the hidden bucket transform; this limitation is explicitly preserved rather than misreported. |
+| `docs/bootstrap-partitioning-file-pruning.md` §4.8 PART-PROBE-002, parseable physical input and expected relative reduction | PASS | acceptance: every `EXPLAIN ANALYZE` scan yielded input rows, bytes, physical input and splits. Date physical input was U=977920B, D=11940B, DR=33070B; route U=977920B, R=377110B, DR=401650B; combined U=977920B, D=11940B, R=377110B, DR=8030B, with DR strictly below D and R. All layouts returned the exact 5120/4480/3200/96000, 25600/22400/16000/480000 and 512/448/320/9600 aggregates. |
+| `docs/bootstrap-partitioning-file-pruning.md` §4.8 PART-PROBE-002, parser/summary decision and isolated cleanup | PASS | acceptance: `workload/parser_contract.json` fixes the Trino-484 composite summary schema (distributed scan cardinality + IO constraints/eligible estimate + runtime physical stats); the manifest-covered `replay_parser_mutations.py` reproduced seven positive/fail-closed cases with deterministic patches and captured actual errors, and `/v1/statement` final stats were validated only as a bounded runtime fallback. The run captured 271 objects, explicitly deleted 161 exact-prefix residual keys after catalog purge, left the schema/prefix empty, restored Compose stopped with ports free and the pre-existing volume preserved, produced a clean secret scan and a 171-file manifest including `probe_summary.json`. |
+
+### Issues
+#### PART-PROBE-002/B01
+- State: RESOLVED
+- Category: TEST
+- Affects: `docs/bootstrap-partitioning-file-pruning.md` §4.8 plan/stats capture
+- Problem: the first workload-capture wrapper omitted the task-local Compose interpolation environment, so the query did not execute.
+- Evidence: `docker compose exec` exited 1 with only the four required missing-variable interpolation errors before invoking Trino; the running task stack remains healthy.
+- Unblock: export the same tracked local training values for every Compose command and rerun the unchanged date capture.
+- Resolution: rerunning the unchanged capture with the tracked task-local training environment produced all 12 result/distributed-plan/IO-plan/runtime evidence bundles successfully.
+
+#### PART-PROBE-002/B02
+- State: RESOLVED
+- Category: TEST
+- Affects: `docs/bootstrap-partitioning-file-pruning.md` §4.8 visible-constraint evidence and mandatory EVIDENCE_GATE
+- Problem: the first parser required the distributed-plan scan descriptor to expose `constraint on [route_id]` for bucket partition pruning, but Trino 484 renders the route case as `ScanFilterProject` with a route predicate and no descriptor constraint marker.
+- Evidence: `EXPLAIN (TYPE DISTRIBUTED, FORMAT JSON)` for `balanced_r WHERE route_id='BENCH-R0002'` contains exactly one owned Iceberg scan and `filterPredicate=(route_id = ...)`, but no `constraint on` suffix; the capture wrapper stopped before accepting ambiguous plan evidence.
+- Unblock: add documented `EXPLAIN (TYPE IO, FORMAT JSON)` column-constraint capture, retain distributed scan cardinality and runtime physical-input evidence, and verify whether this combined summary is stable without claiming that the distributed descriptor exposes bucket transforms.
+- Resolution: the final composite parser uses distributed JSON for exact scan cardinality, IO JSON for machine-readable query constraints and eligible-row estimates, and `EXPLAIN ANALYZE` for runtime physical input; all 12 summaries passed, while the absent bucket descriptor marker remains documented as a Trino-484 limitation.
+
+#### PART-PROBE-002/B03
+- State: RESOLVED
+- Category: TEST
+- Affects: supporting eligible-partition metadata assertion
+- Problem: the first metadata query encoded the Iceberg metadata-table `$` as the literal text `\\u0024`, so Trino looked for a nonexistent table and no metadata assertion executed.
+- Evidence: the query exited 1 with `Table ... balanced_u\\u0024partitions does not exist`; workload result/plan/runtime captures were already complete and remain unaffected.
+- Unblock: quote the actual metadata table names with a literal `$`, rerun the 12-row eligible-record matrix and compare it to IO-plan estimates.
+- Resolution: the corrected UNION-based metadata query used literal `$partitions` names, returned the exact 12-cell eligible-record matrix, and every IO-plan output-row estimate matched its metadata value.
+
+#### PART-PROBE-002/B04
+- State: RESOLVED
+- Category: TEST
+- Affects: parser negative/mutation evidence
+- Problem: the first duplicate-scan mutation copied the output fragment, which contains no scan, so the parser correctly continued to see one scan and the mutation wrapper failed.
+- Evidence: the wrapper stopped at `duplicate scan accepted`; inspection shows the duplicated fragment was the first output fragment rather than the source fragment containing `ScanFilterProject`.
+- Unblock: duplicate the actual source fragment selected by scan-node traversal, then rerun all byte-unit, scan-cardinality, IO-constraint and missing-physical-input mutations.
+- Resolution: the corrected mutation duplicated the source fragment containing the scan; duplicate distributed/runtime scans, duplicate IO input, missing IO constraint, missing physical input and unknown byte unit were all rejected, while B/kB/MB/GB positive cases passed.
+
+#### PART-PROBE-002/B05
+- State: RESOLVED
+- Category: ENVIRONMENT
+- Affects: isolated cleanup and environment-restoration gate
+- Problem: `DROP SCHEMA ... CASCADE` removed the catalog schema but left task-owned Iceberg objects under the exact benchmark prefix.
+- Evidence: the pre-cleanup inventory contained 271 objects; after the schema drop and wait, 161 captured task-prefix objects remained.
+- Unblock: prove every residual key is unique, under the exact task prefix and a subset of the pre-cleanup inventory, then delete only those explicit keys and recheck schema/prefix/environment state.
+- Resolution: all 161 residual keys satisfied the ownership assertions and were deleted by explicit manifest; final schema/prefix checks are empty, Compose is stopped, manifest-covered `cleanup/final_ports.txt` records all four project ports free, and the pre-existing project volume remains.
+
+#### PART-PROBE-002/B06
+- State: RESOLVED
+- Category: TEST
+- Affects: mandatory EVIDENCE_GATE and FRESH_READ_ONLY_REVIEW
+- Problem: the first reviewer found that parser mutation PASS values were only a summary without a manifest-covered executable repro, deterministic mutation patches or captured actual errors.
+- Evidence: reviewer call 1 returned `VERDICT BLOCK`; `workload/parser_mutations.json` contains only seven `PASS` strings and `commands.jsonl` contains only the 48 workload captures.
+- Unblock: save and execute a standalone parser mutation replay with per-case mutation, expected/actual error and command result; include it and `probe_summary.json` in the rebuilt manifest, add a persisted port-restoration assertion or remove that claim, then obtain fresh re-review.
+- Resolution: added and executed manifest-covered `workload/replay_parser_mutations.py`; `parser_mutations_detailed.json` records each source, deterministic patch, expected substring and actual error, the command exited 0, `probe_summary.json` is now hashed by the 171-file manifest, and final port evidence is persisted.
+
+### Review
+- Verdict: OK
+- Calls: 2
+- Fix iterations: 1
+- Details: reviewer call 1 independently confirmed scan/result/metadata/runtime reduction/cleanup claims and returned `VERDICT BLOCK` for non-reproducible mutation evidence. After the targeted replay/manifest/port-evidence fix, reviewer call 2 inspected the complete corrected diff and ignored evidence, confirmed B06 resolution and all counters, found no BLOCKER, DEFERRED or IMPROVEMENT, and returned `VERDICT OK`.
+
+### Next action
+User reviews the checkpoint and, if accepted, stages and commits `docs/status.md`; no push or transition to PF-ENV-001 is authorized.
