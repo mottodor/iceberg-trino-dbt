@@ -1216,3 +1216,58 @@ After this user-authorized checkpoint commit, await separate authorization for p
 
 ### Next action
 User reviews the checkpoint and, if accepted, stages and commits `scripts/run_schema_evolution_acceptance.py` and `docs/status.md`; no push or transition to another slice is authorized.
+
+## TASK_ID: PART-PROBE-001
+
+- Source: `docs/bootstrap-partitioning-file-pruning.md` §4.8, “PART-PROBE-001 — writer topology и `$files` schema”; supporting contract `docs/spec.md` §11.2–§11.7
+- Status: REVIEW_READY
+- Updated: 2026-10-31T00:04:01+03:00
+- Baseline HEAD: 784d203887374ed1ee98ea39623941977d100f95
+
+### Progress
+- Implemented: started the isolated pinned stack; proved query readiness and collision-free ownership; selected ten routes with exact bucket distribution 3/3/2/2; created balanced `U/D/R/DR` by one CTAS per table; verified exact rows, logical equality, tuple/file topology, `SHOW CREATE TABLE`, typed `$files` bounds and representative no-extra-file-exclusion checks; captured 271 Iceberg objects; removed the exact schema and residual task keys; restored the initially stopped environment with all three pre-existing volumes preserved; wrote a clean secret scan and 79-file evidence manifest.
+- Remaining: none.
+
+### AC evidence
+| AC / ссылка на источник | Result | Проверка / evidence / причина |
+|---|---|---|
+| `docs/bootstrap-partitioning-file-pruning.md` §4.8 PART-PROBE-001, exact balanced rows and partition topology | PASS | acceptance: four single-CTAS writes completed in 5.43/2.87/2.35/3.76 seconds; every layout has 256000 unique rows, 50 days, 10 routes and exact full-scan aggregate 256000/224000/160000/4800000. Bidirectional reconciliation against `U` returned zero differences; `$partitions`/`$files` proved `D=50/50`, `R=4/4`, `DR=200/200` non-empty tuples/files. |
+| `docs/bootstrap-partitioning-file-pruning.md` §4.8 PART-PROBE-001, pinned Trino 484 `$files` schema and typed lower/upper bounds | PASS | acceptance: `DESCRIBE <table$files>` exposes `lower_bounds`/`upper_bounds` as typed rows with fields 1–8 matching the benchmark schema; direct field access such as `lower_bounds."2"` and `lower_bounds."4"` succeeded. Representative day 2025-03-30 and route `BENCH-R0002` selected one candidate file in each applicable tuple/control and every selected file's typed bounds included the target, so bounds excluded no additional file. |
+| `docs/bootstrap-partitioning-file-pruning.md` §4.8 PART-PROBE-001, isolated cleanup and environment restoration | PASS | acceptance: before cleanup the exact prefix contained 271 Iceberg objects (5655939 bytes). `DROP SCHEMA ... CASCADE` removed the schema; after Polaris timed out deleting 212 residual task objects, an asserted exact-key subset manifest removed only those keys. Final prefix/schema checks are empty, `docker compose down` restored the initially stopped state in 5.44 seconds, all three pre-existing volumes remain, the secret scan is clean and the manifest covers 79 evidence files. |
+
+### Issues
+#### PART-PROBE-001/B01
+- State: RESOLVED
+- Category: TEST
+- Affects: `docs/bootstrap-partitioning-file-pruning.md` §4.8 route mapping prerequisite and mandatory EVIDENCE_GATE
+- Problem: the first route-mapping query used the documentation shorthand `system.bucket` without a session catalog, so Trino could not resolve the function and the probe tables were not created.
+- Evidence: Trino query `20261030_204344_00002_ndr9b` exited 1 with `Session default catalog must be set to resolve a partial function name: system.bucket`; the exact schema collision check had passed and `CREATE SCHEMA` was not reached.
+- Unblock: invoke the Iceberg connector function with the explicit catalog namespace, rerun the exact 3/3/2/2 mapping assertion, and only then establish schema ownership.
+- Resolution: `lakehouse.system.bucket` returned the exact 3/3/2/2 distribution for ten routes; the assertion passed and `CREATE SCHEMA lakehouse.partprobe001_partition_benchmark` then succeeded.
+
+#### PART-PROBE-001/B02
+- State: RESOLVED
+- Category: TEST
+- Affects: candidate write protocol for the 200-tuple `DR` layout
+- Problem: the attempted session override `lakehouse.max_partitions_per_writer = 250` is outside the pinned connector's allowed range, so it cannot be used to force one writer to hold all composite partitions.
+- Evidence: Trino query `20261030_204537_00006_ndr9b` exited 1 with `max_partitions_per_writer must be between 1 and 100`; no table write was attempted by that query.
+- Unblock: run the single-CTAS candidate with the default 100-partition limit and verify whether parallel writers distribute all 200 tuples successfully; if not, use bounded interleaved batches without changing data or partition specs.
+- Resolution: the unchanged single CTAS at the pinned default completed in 3.76 seconds and produced exactly 200 non-empty composite tuples with one file per tuple and 256000 total rows; no batching or contract change was required.
+
+#### PART-PROBE-001/B03
+- State: RESOLVED
+- Category: ENVIRONMENT
+- Affects: `docs/bootstrap-partitioning-file-pruning.md` §4.8 cleanup and mandatory environment-restoration gate
+- Problem: schema purge removed the catalog namespace but did not finish deleting all task-owned Iceberg objects, so the required empty prefix was not initially achieved.
+- Evidence: pre-cleanup inventory contained 271 objects; the schema absence query was header-only, but immediate, 10-second and later retries each found 212 residual objects (205 Parquet, five Avro and two stats; 2117304 bytes). Polaris logs show concurrent cleanup tasks and repeated `Timeout waiting for connection from pool` failures in `S3FileIO.deleteBatch`.
+- Unblock: verify every residual key is an exact-prefix subset of the captured task inventory, delete only those explicit keys through the task-owned RustFS credentials, then recheck the prefix before stopping Compose; do not delete the bucket, volumes or any other prefix.
+- Resolution: all 212 residual keys were unique, matched the exact task prefix and were a subset of the captured 271-key inventory; one explicit `delete-objects` manifest removed them. The final listing is empty, Compose is stopped, ports are free and all three pre-existing volumes remain.
+
+### Review
+- Verdict: OK
+- Calls: 1
+- Fix iterations: 0
+- Details: one fresh read-only reviewer inspected the complete append-only tracked diff, source contract, every required ignored evidence path, manifest/hash coverage, cleanup fallback and environment restoration. It found no BLOCKER, DEFERRED or IMPROVEMENT and returned `VERDICT OK`; status-only finalization is permitted.
+
+### Next action
+User reviews the checkpoint and, if accepted, stages and commits `docs/status.md`; no push or transition to PART-PROBE-002 is authorized.
