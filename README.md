@@ -54,19 +54,17 @@ dbt Core: Bronze → Silver → Gold + tests
 
 Container versions and Python dependencies are pinned in the repository.
 
-### 2. Set local training credentials
+### 2. Create the local environment file
 
-Use non-production values dedicated to this local project:
+Copy the tracked template and keep the resulting `.env` file local:
 
 ```bash
-export RUSTFS_ACCESS_KEY=training-access-key
-export RUSTFS_SECRET_KEY=training-secret-key-change-me
-export POLARIS_CLIENT_ID=training-client
-export POLARIS_CLIENT_SECRET=training-client-secret-change-me
-export DBT_TRINO_SCHEMA=learn
+cp .env.example .env
 ```
 
-`DBT_TRINO_SCHEMA` is the prefix for an isolated learning run. The models will be created in `learn_bronze`, `learn_silver`, and `learn_gold` schemas.
+The template contains non-production training credentials. Docker Compose and the acceptance scripts load the root `.env` automatically; shell variables still take precedence when explicitly set.
+
+`DBT_TRINO_SCHEMA` is the prefix for an isolated learning run. With the template value, models are created in the `learn_bronze`, `learn_silver`, and `learn_gold` schemas.
 
 ### 3. Start the stack
 

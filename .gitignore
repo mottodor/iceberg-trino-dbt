@@ -1,3 +1,6 @@
+.env
 artifacts/acceptance/
+dbt/logs/
+dbt/target/
 __pycache__/
 *.pyc

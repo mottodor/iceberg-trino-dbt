@@ -35,6 +35,7 @@ REQUIRED_ENV = (
 )
 LAYERS = ("fixtures", "bronze", "silver", "gold")
 RUN_ID_PATTERN = re.compile(r"^[a-z][a-z0-9_]{2,31}$")
+ENV_NAME_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 NEGATIVE_SCENARIOS = (
     (
@@ -63,6 +64,49 @@ class CommandResult:
 
 class AcceptanceError(RuntimeError):
     """An acceptance assertion or safe-operation precondition failed."""
+
+
+def load_project_env(path: Path = ROOT / ".env") -> None:
+    """Load simple Compose-style KEY=VALUE entries without overriding the shell."""
+    if not path.is_file():
+        return
+
+    for line_number, raw_line in enumerate(
+        path.read_text(encoding="utf-8").splitlines(), start=1
+    ):
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[7:].lstrip()
+
+        name, separator, raw_value = line.partition("=")
+        name = name.strip()
+        if not separator or not ENV_NAME_PATTERN.fullmatch(name):
+            raise AcceptanceError(f"invalid .env entry at {path}:{line_number}")
+
+        value = raw_value.strip()
+        if value.startswith('"'):
+            try:
+                value = json.loads(value)
+            except json.JSONDecodeError as error:
+                raise AcceptanceError(
+                    f"invalid double-quoted .env value at {path}:{line_number}"
+                ) from error
+            if not isinstance(value, str):
+                raise AcceptanceError(
+                    f"invalid double-quoted .env value at {path}:{line_number}"
+                )
+        elif value.startswith("'"):
+            if len(value) < 2 or not value.endswith("'"):
+                raise AcceptanceError(
+                    f"invalid single-quoted .env value at {path}:{line_number}"
+                )
+            value = value[1:-1]
+        else:
+            value = re.split(r"\s+#", value, maxsplit=1)[0].rstrip()
+
+        os.environ.setdefault(name, value)
 
 
 class AcceptanceRun:
@@ -157,6 +201,7 @@ class AcceptanceRun:
             raise error
 
     def preflight(self) -> None:
+        load_project_env()
         missing = [name for name in REQUIRED_ENV if not os.environ.get(name)]
         if missing:
             raise AcceptanceError(
