@@ -1181,3 +1181,38 @@ User reviews the checkpoint and, if accepted, stages and commits `scripts/run_sc
 
 ### Next action
 After this user-authorized checkpoint commit, await separate authorization for push or transition to SE-IMP-006.
+
+## TASK_ID: SE-IMP-006
+
+- Source: `docs/bootstrap-schema-evolution.md` §5.3, “SE-IMP-006 — end-to-end evidence и cleanup”; `docs/spec.md` AC-020
+- Status: REVIEW_READY
+- Updated: 2026-10-30T12:14:44+03:00
+- Baseline HEAD: 55d680bcdfed2005e413a43a9366cc2e4e02332a
+
+### Progress
+- Implemented: added exact 21-table catalog registration evidence, Polaris catalog and complete task-prefix Iceberg object capture, final manifest coverage assertions, and an AC-020 finalization gate that marks PASS only after AC-013–AC-019, task cleanup, environment restoration, secret scan and manifest validation. After reviewer feedback, cleanup now queries the exact five task schemas after DROP and requires a header-only result. Fast checks and retained-schema mutation probes passed; isolated run `seimp006_final2` completed the full workflow and restored the environment.
+- Remaining: none.
+
+### AC evidence
+| AC / ссылка на источник | Result | Проверка / evidence / причина |
+|---|---|---|
+| `docs/spec.md` AC-020; `docs/bootstrap-schema-evolution.md` §5.3 SE-IMP-006 | PASS | fast/acceptance: LSP diagnostics, `py_compile`, CLI help, catalog/object/manifest/finalization and retained-schema mutation probes plus `git diff --check` passed. Run `seimp006_final2` exited 0 in 330.75 seconds with AC-013–AC-020 PASS, 153 recorded commands, exact 21 task tables including one evolution table, 122 task-prefix Iceberg objects, clean secret scan and a verified 748-file manifest. Post-drop evidence returned header-only `cleanup/remaining_schemas.csv`, an empty task object prefix, no project containers or bound project ports, and the preserved pre-existing project RustFS volume. |
+
+### Issues
+#### SE-IMP-006/B01
+- State: RESOLVED
+- Category: TEST
+- Affects: `docs/spec.md` AC-020 and mandatory EVIDENCE_GATE
+- Problem: cleanup can report success and AC-020 PASS without querying that all five task-owned schemas are absent after the DROP operations.
+- Evidence: the first fresh reviewer traced `cleanup_task_data` and `seimp006_final/commands.jsonl`; after five DROP commands the workflow only lists the object prefix, and no `cleanup/remaining_schemas.csv` assertion exists. It returned `VERDICT: BLOCK`.
+- Unblock: add an exact post-drop query for the five schema names, require a header-only result, include it in the manifest contract, run a retained-schema mutation probe and a fresh isolated acceptance run, then re-review.
+- Resolution: cleanup now saves and asserts header-only `cleanup/remaining_schemas.csv`; the retained-schema lifecycle mutation is rejected, and final run `seimp006_final2` recorded the exact post-drop query with zero task schemas while AC-020 remained gated through the verified manifest.
+
+### Review
+- Verdict: OK
+- Calls: 2
+- Fix iterations: 1
+- Details: the first fresh read-only reviewer returned `VERDICT: BLOCK` for B01. After the targeted cleanup assertion, mutation probe and fresh acceptance run, the second fresh reviewer inspected the complete corrected diff and `seimp006_final2` evidence, confirmed B01 resolution, found no BLOCKER or IMPROVEMENT, and returned `VERDICT: OK`. DEFERRED: the reviewer toolset could not independently execute Git/LSP/fast checks; the main-agent checks and saved runtime evidence cover those gates.
+
+### Next action
+User reviews the checkpoint and, if accepted, stages and commits `scripts/run_schema_evolution_acceptance.py` and `docs/status.md`; no push or transition to another slice is authorized.

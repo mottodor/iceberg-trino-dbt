@@ -123,6 +123,56 @@ EVO_P5_ROW = [
     "24.0",
     "true",
 ]
+BASELINE_TABLES = {
+    "fixtures": (
+        "hubs",
+        "packages",
+        "route_checkpoints",
+        "route_plan_changes",
+        "tracking_events",
+    ),
+    "bronze": (
+        "bronze_hubs",
+        "bronze_packages",
+        "bronze_route_checkpoints",
+        "bronze_route_plan_changes",
+        "bronze_tracking_events",
+    ),
+    "silver": (
+        "silver_package_current_state",
+        "silver_package_route_binding",
+        "silver_route_plan_checkpoint_segments",
+        "silver_route_plan_versions",
+        "silver_tracking_events",
+        "silver_tracking_events_typed",
+    ),
+    "gold": (
+        "gold_hub_visits",
+        "gold_package_delivery_fact",
+        "gold_route_version_efficiency",
+        "gold_route_version_hub_dwell",
+    ),
+}
+REQUIRED_FINAL_EVIDENCE_PATHS = {
+    "commands.jsonl",
+    "core/comparison.json",
+    "evolution/s0/metadata.json",
+    "evolution/ddl/01_rename/metadata.json",
+    "evolution/ddl/02_widen/metadata.json",
+    "evolution/ddl/03_add_priority/metadata.json",
+    "evolution/historical/comparison.json",
+    "evolution/narrowing/comparison.json",
+    "runtime/catalog_tables.csv",
+    "runtime/polaris_catalog.json",
+    "runtime/object_paths.json",
+    "runtime/object_paths.csv",
+    "runtime/end_to_end.json",
+    "cleanup/drop_schemas.log",
+    "cleanup/remaining_schemas.csv",
+    "cleanup/remaining_objects.json",
+    "cleanup/environment.json",
+    "secret_scan.json",
+}
 
 
 def core_contract_mismatches(
@@ -135,6 +185,106 @@ def core_contract_mismatches(
         for name in before.keys() | after.keys()
         if before.get(name) != after.get(name)
     )
+
+
+def assert_end_to_end_catalog_rows(
+    rows: list[list[str]],
+    *,
+    baseline_prefix: str,
+    evolution_schema: str,
+) -> None:
+    """Require the exact core and evolution table registrations before cleanup."""
+    expected = [
+        ["table_schema", "table_name"],
+        *sorted(
+            [f"{baseline_prefix}_{layer}", table_name]
+            for layer, table_names in BASELINE_TABLES.items()
+            for table_name in table_names
+        ),
+        [evolution_schema, EVOLUTION_TABLE],
+    ]
+    expected[1:] = sorted(expected[1:])
+    if rows != expected:
+        raise AcceptanceError(
+            f"unexpected end-to-end catalog tables: expected {len(expected) - 1}, "
+            f"got {max(len(rows) - 1, 0)}"
+        )
+
+
+def assert_task_schemas_absent(rows: list[list[str]]) -> None:
+    """Require the exact post-drop schema query to return no task schemas."""
+    if rows != [["schema_name"]]:
+        raise AcceptanceError(f"task schemas remain after cleanup: {rows[1:]}")
+
+
+def assert_task_object_listing(
+    objects: dict[str, Any],
+    *,
+    run_id: str,
+) -> list[dict[str, Any]]:
+    """Validate the task-owned Iceberg object listing captured before cleanup."""
+    expected_prefix = f"warehouse/{run_id}_"
+    if objects.get("Prefix") != expected_prefix:
+        raise AcceptanceError(
+            f"unexpected task object prefix: {objects.get('Prefix')}"
+        )
+    contents = objects.get("Contents")
+    if not isinstance(contents, list) or not contents:
+        raise AcceptanceError("no task object paths were found")
+
+    validated = []
+    for item in contents:
+        if (
+            not isinstance(item, dict)
+            or not isinstance(item.get("Key"), str)
+            or not item["Key"].startswith(expected_prefix)
+            or not isinstance(item.get("Size"), int)
+            or item["Size"] <= 0
+        ):
+            raise AcceptanceError(f"invalid task object listing row: {item}")
+        validated.append(item)
+
+    keys = [item["Key"] for item in validated]
+    required_suffixes = (".parquet", ".metadata.json", ".avro")
+    missing_suffixes = [
+        suffix for suffix in required_suffixes if not any(key.endswith(suffix) for key in keys)
+    ]
+    if missing_suffixes:
+        raise AcceptanceError(
+            "task object paths lack required Iceberg files: "
+            + ", ".join(missing_suffixes)
+        )
+    return sorted(validated, key=lambda item: item["Key"])
+
+
+def assert_final_evidence_manifest(manifest: dict[str, Any]) -> None:
+    """Require the final manifest to cover every AC-020 evidence boundary."""
+    entries = manifest.get("files")
+    if not isinstance(entries, list) or not entries:
+        raise AcceptanceError("evidence manifest is empty or invalid")
+
+    paths: set[str] = set()
+    for entry in entries:
+        if (
+            not isinstance(entry, dict)
+            or not isinstance(entry.get("path"), str)
+            or not isinstance(entry.get("size"), int)
+            or entry["size"] < 0
+            or not isinstance(entry.get("sha256"), str)
+            or len(entry["sha256"]) != 64
+            or any(character not in "0123456789abcdef" for character in entry["sha256"])
+        ):
+            raise AcceptanceError(f"invalid evidence manifest entry: {entry}")
+        path = entry["path"]
+        if path in paths:
+            raise AcceptanceError(f"duplicate evidence manifest path: {path}")
+        paths.add(path)
+
+    missing = sorted(REQUIRED_FINAL_EVIDENCE_PATHS - paths)
+    if missing:
+        raise AcceptanceError(
+            "evidence manifest lacks required AC-020 paths: " + ", ".join(missing)
+        )
 
 
 def assert_s0_rows(rows: list[list[str]]) -> None:
@@ -504,6 +654,8 @@ class SchemaEvolutionAcceptanceRun(AcceptanceRun):
         self.s0_file_identities: list[dict[str, Any]] = []
         self.s0_metadata_summary: dict[str, Any] = {}
         self.evolved_metadata_summary: dict[str, Any] = {}
+        self.end_to_end_evidence_captured = False
+        self.environment_restored = False
 
     def run(self) -> None:
         self.preflight()
@@ -551,6 +703,7 @@ class SchemaEvolutionAcceptanceRun(AcceptanceRun):
 
         try:
             self.assert_environment_restored()
+            self.environment_restored = True
         except Exception as restore_error:
             if error is None:
                 error = restore_error
@@ -610,34 +763,13 @@ class SchemaEvolutionAcceptanceRun(AcceptanceRun):
 
         self.ac_results["AC-013"] = "PASS"
         pending = [
-            ac for ac in SCHEMA_EVOLUTION_ACS if self.ac_results[ac] != "PASS"
+            ac for ac in SCHEMA_EVOLUTION_ACS[:-1] if self.ac_results[ac] != "PASS"
         ]
         if pending:
-            if self.ac_results["AC-018"] == self.ac_results["AC-019"] == "PASS":
-                completed_stage = "historical compatibility and narrowing"
-                next_task = "SE-IMP-006"
-            elif self.ac_results["AC-016"] == self.ac_results["AC-017"] == "PASS":
-                completed_stage = "reader/writer compatibility"
-                next_task = "SE-IMP-005"
-            else:
-                completed_stage = "metadata-only evolution"
-                next_task = "SE-IMP-004"
-            self.write_json(
-                "evolution/pending.json",
-                {
-                    "completed": [
-                        ac
-                        for ac in SCHEMA_EVOLUTION_ACS
-                        if self.ac_results[ac] == "PASS"
-                    ],
-                    "pending": pending,
-                    "next_task": next_task,
-                },
-            )
             raise AcceptanceError(
-                f"schema-evolution exercise is incomplete after {completed_stage}; "
-                f"continue with {next_task}"
+                "schema-evolution behavior checks are incomplete: " + ", ".join(pending)
             )
+        self.capture_end_to_end_evidence()
 
     def run_schema_evolution_steps(self) -> None:
         """Create S0, then prove the ordered schema changes are metadata-only."""
@@ -1949,6 +2081,63 @@ class SchemaEvolutionAcceptanceRun(AcceptanceRun):
             raise AcceptanceError(f"EVO-P5 leaked into core relations: {absence_rows}")
         return captures
 
+    def capture_end_to_end_evidence(self) -> None:
+        """Capture final catalog and object evidence before task-owned cleanup."""
+        schemas = [
+            *(f"{self.baseline_prefix}_{layer}" for layer in LAYERS),
+            self.evolution_schema,
+        ]
+        quoted_schemas = ", ".join(f"'{schema}'" for schema in schemas)
+        rows = self.query_csv(
+            "runtime/catalog_tables.csv",
+            "SELECT table_schema, table_name "
+            "FROM lakehouse.information_schema.tables "
+            f"WHERE table_schema IN ({quoted_schemas}) "
+            "ORDER BY table_schema, table_name",
+        )
+        assert_end_to_end_catalog_rows(
+            rows,
+            baseline_prefix=self.baseline_prefix,
+            evolution_schema=self.evolution_schema,
+        )
+
+        catalog = self.fetch_polaris_catalog()
+        self.write_json("runtime/polaris_catalog.json", catalog)
+        catalog_body = catalog.get("catalog", catalog)
+        if not isinstance(catalog_body, dict) or catalog_body.get("name") != CATALOG:
+            raise AcceptanceError("Polaris did not return the expected catalog")
+
+        objects = self.list_objects(f"warehouse/{self.run_id}_")
+        self.write_json("runtime/object_paths.json", objects)
+        contents = assert_task_object_listing(objects, run_id=self.run_id)
+        self.write_csv(
+            "runtime/object_paths.csv",
+            [
+                ["key", "size", "etag"],
+                *[
+                    [item["Key"], item["Size"], item.get("ETag")]
+                    for item in contents
+                ],
+            ],
+        )
+        self.write_json(
+            "runtime/end_to_end.json",
+            {
+                "catalog": CATALOG,
+                "table_count": len(rows) - 1,
+                "evolution_table": (
+                    f"{CATALOG}.{self.evolution_schema}.{EVOLUTION_TABLE}"
+                ),
+                "object_count": len(contents),
+                "required_object_types": [
+                    "Parquet data",
+                    "Iceberg metadata JSON",
+                    "Iceberg Avro manifest",
+                ],
+            },
+        )
+        self.end_to_end_evidence_captured = True
+
     def cleanup_task_data(self) -> None:
         schemas = [
             self.evolution_schema,
@@ -1972,10 +2161,67 @@ class SchemaEvolutionAcceptanceRun(AcceptanceRun):
             drop_logs.append(f"{schema}: {result.stdout}{result.stderr}")
         self.write_text("cleanup/drop_schemas.log", "".join(drop_logs))
 
+        quoted_schemas = ", ".join(f"'{schema}'" for schema in schemas)
+        remaining_schemas = self.query_csv(
+            "cleanup/remaining_schemas.csv",
+            "SELECT schema_name FROM lakehouse.information_schema.schemata "
+            f"WHERE schema_name IN ({quoted_schemas}) ORDER BY schema_name",
+        )
+        assert_task_schemas_absent(remaining_schemas)
+
         remaining = self.list_objects(f"warehouse/{self.run_id}_")
         self.write_json("cleanup/remaining_objects.json", remaining)
         if remaining.get("Contents"):
             raise AcceptanceError("task object paths remain after schema cleanup")
+
+    def finalize(self, error: Exception | None) -> Exception | None:
+        """Set AC-020 PASS only after cleanup, restoration, scan, and manifest gates."""
+        if error is None:
+            pending = [
+                ac for ac in SCHEMA_EVOLUTION_ACS[:-1] if self.ac_results[ac] != "PASS"
+            ]
+            if pending:
+                error = AcceptanceError(
+                    "cannot finalize AC-020 with pending behavior checks: "
+                    + ", ".join(pending)
+                )
+            elif not self.end_to_end_evidence_captured:
+                error = AcceptanceError("end-to-end catalog/object evidence was not captured")
+            elif not self.data_cleaned:
+                error = AcceptanceError("task-owned schemas and objects were not cleaned")
+            elif not self.environment_restored:
+                error = AcceptanceError("Compose environment was not restored")
+
+        try:
+            self.assert_no_secrets_in_evidence()
+        except Exception as scan_error:
+            if error is None:
+                error = scan_error
+
+        if error is None:
+            try:
+                self.write_evidence_manifest()
+                manifest_path = self.evidence_dir / "evidence_manifest.json"
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                if not isinstance(manifest, dict):
+                    raise AcceptanceError("evidence manifest root is invalid")
+                assert_final_evidence_manifest(manifest)
+                self.ac_results["AC-020"] = "PASS"
+                self.write_summary("PASS", None)
+                return None
+            except Exception as finalization_error:
+                self.ac_results["AC-020"] = "NOT_RUN"
+                error = finalization_error
+
+        try:
+            self.write_summary("FAIL", f"{type(error).__name__}: {error}")
+        except Exception:
+            pass
+        try:
+            self.write_evidence_manifest()
+        except Exception:
+            pass
+        return error
 
     def write_summary(self, outcome: str, error: str | None) -> None:
         self.write_json_atomic(
@@ -1995,6 +2241,11 @@ class SchemaEvolutionAcceptanceRun(AcceptanceRun):
                     "commands": "commands.jsonl",
                     "core": "core/",
                     "evolution": "evolution/",
+                    "catalog_tables": "runtime/catalog_tables.csv",
+                    "polaris_catalog": "runtime/polaris_catalog.json",
+                    "object_paths": "runtime/object_paths.json",
+                    "end_to_end": "runtime/end_to_end.json",
+                    "remaining_schemas": "cleanup/remaining_schemas.csv",
                     "cleanup": "cleanup/environment.json",
                     "secret_scan": "secret_scan.json",
                     "manifest": "evidence_manifest.json",
