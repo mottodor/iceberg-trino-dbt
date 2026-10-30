@@ -688,3 +688,280 @@ Core vertical slice, делегирование и критерии AC-001–AC-
 - дальнейшее изменение ожидаемой совместимости, schema operations или core boundary требует возврата затронутой части в `DRAFT`.
 
 Этап Specify завершён со статусом `APPROVED`. Реализация автоматически не запускается.
+
+## 11. Черновик следующего среза: partitioning и file-pruning benchmark
+
+### 11.1. Статус, источник и границы
+
+**Статус раздела:** `APPROVED`
+
+**Используемый skill:** Specify `0.2.0`
+
+**Утверждённая база:** разделы 1–10 этого документа, включая завершённые core vertical slice и schema evolution slice.
+
+**Текущая роль раздела:** накопление решений для следующего изолированного среза; реализация, сервисы и технические эксперименты в Specify не выполняются.
+
+Завершённые контракты, fixtures, модели, ожидаемые результаты и критерии AC-003–AC-020 не изменяются. Новый срез не должен добавлять benchmark-строки в core Bronze/Silver/Gold или в schema-evolution таблицу.
+
+В срез входят выбор partition spec под смешанный workload, анализ `EXPLAIN`, доказательство partition/file pruning и сравнение физически разных Iceberg-таблиц с логически одинаковыми данными. Sorting/clustering, small-files remediation, compaction, snapshot expiration и изменение incremental strategy не входят в этот срез.
+
+### 11.2. Решения пользователя, уже принятые для среза
+
+1. Benchmark использует отдельный детерминированный синтетический набор в логистическом домене, а не текущие четыре core package-факта.
+2. Синтетические данные создаются непосредственно как изолированный benchmark fact с grain «одна строка на синтетическую посылку». Отдельный Bronze/Silver/Gold pipeline для benchmark не создаётся.
+3. Основное временное измерение — pickup cohort по `picked_up_at`; `picked_up_at` заполнен у каждой benchmark-строки.
+4. Workload смешанный и включает временной предикат, маршрутный предикат, их комбинацию и полный scan без partition-фильтра.
+5. Сравниваются четыре физических layout одного логического dataset:
+   - unpartitioned control;
+   - `day(picked_up_at)`;
+   - `bucket(route_id, 4)`;
+   - `day(picked_up_at)` вместе с `bucket(route_id, 4)`.
+6. Используются два логических распределения — balanced и skewed. Каждое записывается во все четыре layout; всего восемь benchmark-таблиц.
+7. Balanced и skewed имеют одинаковые схему, общий объём, временной диапазон и набор маршрутов. Меняется только плотность строк по датам и маршрутам.
+8. Фиксированный объём каждого логического dataset:
+   - 50 последовательных pickup-дней;
+   - 10 маршрутов;
+   - 256 000 строк;
+   - balanced содержит 512 строк на каждую комбинацию `день × маршрут`.
+   Суммарно восемь физических таблиц содержат 2 048 000 строк.
+9. Skew выраженный и действует независимо по обоим измерениям:
+   - 20% маршрутов содержат 80% строк;
+   - 20% дней содержат 80% строк;
+   - hot + peak содержит 64%, cold + peak — 16%, hot + off-peak — 16%, cold + off-peak — 4% строк;
+   - размеры одной комбинации соответственно равны 8192, 512, 512 и 32 строкам.
+10. Два hot routes должны попадать в разные из четырёх buckets; все четыре buckets должны быть непустыми. Фактическое отображение фиксированных `route_id` проверяется через Trino `system.bucket`, а не предполагается по имени.
+11. Обязательные запросы возвращают одну агрегированную строку с точными метриками:
+    - `package_count`;
+    - `completed_count`;
+    - `on_time_count`;
+    - `total_delay_minutes`.
+12. Completed/on-time/delay определяются одной детерминированной формулой для всех групп и не зависят от hot/cold или peak/off-peak. Skew влияет только на число строк.
+13. Главный критерий эффективности — структурное доказательство pruning, а не wall-clock latency. Время выполнения может сохраняться как диагностическая метрика, но не определяет PASS/FAIL.
+14. Benchmark должен изолировать partition pruning: намеренная сортировка по `picked_up_at`/`route_id` запрещена, а unpartitioned data files должны перекрывать широкий диапазон дат и маршрутов. Случайно кластеризованный control не считается валидной базой.
+15. Evidence contract включает:
+    - точный набор подходящих partition tuples по `$partitions`;
+    - выбранные data files, record counts и file sizes по `$files`;
+    - partition constraints в `EXPLAIN`;
+    - physical input в `EXPLAIN ANALYZE`;
+    - точное равенство query results между layout;
+    - относительное уменьшение physical input для подходящего layout против control;
+    - отсутствие pruning для полного scan.
+    Точное равенство physical input сумме Parquet file sizes не требуется из-за column projection, encoding и compression.
+16. Регрессия завершённых slices выполняется по impact-based правилу. Их артефакты являются immutable boundary; при отсутствии изменений общих компонентов достаточно path-scoped diff/fingerprint checks и runtime isolation. Если меняется Compose, infra, общий helper или иной shared path, полный acceptance затронутого завершённого slice становится обязательным.
+
+### 11.3. Обязательная форма workload
+
+Выбран минимальный полный набор из 13 query cases. Каждый case выполняется против всех четырёх layout соответствующего dataset с одинаковой проекцией агрегатов.
+
+Balanced содержит четыре case:
+
+1. один representative pickup-day;
+2. один representative route;
+3. комбинация этого дня и маршрута;
+4. full scan без partition-предиката.
+
+Skewed содержит девять case:
+
+1. peak day;
+2. off-peak day;
+3. hot route;
+4. cold route;
+5. hot route + peak day;
+6. hot route + off-peak day;
+7. cold route + peak day;
+8. cold route + off-peak day;
+9. full scan.
+
+Всего выполняются 52 логических query-layout сравнения, не считая отдельных `EXPLAIN`/`EXPLAIN ANALYZE` evidence-команд. Balanced не повторяет симметричные дни и маршруты.
+
+Фиксированный pickup-range охватывает 50 UTC-дней с 2025-03-01 по 2025-04-19 включительно. Peak period — первые десять дней, с 2025-03-01 по 2025-03-10. Representative peak day — 2025-03-05, representative off-peak day — 2025-03-30; balanced использует 2025-03-30.
+
+Дневные predicates задаются полуинтервалом по исходной timestamp-колонке, например `picked_up_at >= TIMESTAMP '2025-03-30 00:00:00 UTC' AND picked_up_at < TIMESTAMP '2025-03-31 00:00:00 UTC'`. `CAST(picked_up_at AS DATE)` и иные query-side преобразования partition-колонки в обязательном workload не используются.
+
+Route IDs выбираются детерминированно из последовательности `BENCH-R0001`, `BENCH-R0002`, … по `system.bucket(route_id, 4)`. Итоговое распределение route IDs по buckets равно 3/3/2/2: buckets 0 и 1 содержат по одному hot и двум cold routes, buckets 2 и 3 — по два cold routes. Representative hot route — hot route из bucket 0; representative cold route — первый cold route из bucket 2. Balanced использует тот же representative cold route. Конкретный полученный mapping сохраняется как evidence.
+
+### 11.4. Детерминированный контракт состояний
+
+Completed/on-time/delay задаются циклом длиной 16 внутри каждой комбинации `pickup-day × route`. Локальная позиция строки в комбинации принимает значения от 0 до `group_size - 1`; правило использует `position % 16`.
+
+| Позиции modulo 16 | Состояние | `delivered_at` | `is_on_time` | `delay_minutes` |
+| --- | --- | --- | --- | ---: |
+| 0–1 | active | `NULL` | `NULL` | `NULL` |
+| 2–11 | completed on time | не `NULL` | `true` | 0 |
+| 12 | completed late | не `NULL` | `false` | 30 |
+| 13 | completed late | не `NULL` | `false` | 60 |
+| 14 | completed late | не `NULL` | `false` | 90 |
+| 15 | completed late | не `NULL` | `false` | 120 |
+
+На каждые 16 строк ожидаются `package_count=16`, `completed_count=14`, `on_time_count=10` и `total_delay_minutes=300`. Все размеры групп 32, 512 и 8192 делятся на 16, поэтому правило даёт точные агрегаты для любого полного day/route segment без floating-point допусков.
+
+Typed-схема benchmark fact:
+
+| Колонка | Тип | Правило |
+| --- | --- | --- |
+| `package_id` | `VARCHAR` | Уникальный детерминированный ID внутри balanced или skewed dataset; одинаков для четырёх layout одного dataset. |
+| `route_id` | `VARCHAR` | Один из 10 bucket-aware маршрутов. |
+| `route_version_id` | `VARCHAR` | `<route_id>-V1`. |
+| `picked_up_at` | `TIMESTAMP(6) WITH TIME ZONE` | UTC day start плюс `position % 1440` минут. |
+| `promised_delivery_at` | `TIMESTAMP(6) WITH TIME ZONE` | `picked_up_at + INTERVAL '48' HOUR`. |
+| `delivered_at` | `TIMESTAMP(6) WITH TIME ZONE` | `NULL` для active; обещанный срок для on-time; обещанный срок плюс задержка для late. |
+| `is_on_time` | `BOOLEAN` | `NULL` для active; иначе результат `delivered_at <= promised_delivery_at`. |
+| `delay_minutes` | `BIGINT` | `NULL` для active; 0 для on-time; 30, 60, 90 или 120 для late. |
+
+Общий SLA benchmark равен 48 часам. Он используется только внутри benchmark slice и не меняет SLA core fixtures. Для completed on-time `delivered_at=promised_delivery_at`; для late `delivered_at=promised_delivery_at + delay_minutes`. Дополнительные shipment, hub, distance или payload-колонки в обязательную схему не входят.
+
+### 11.5. Exact results и directional pruning matrix
+
+#### Логические результаты balanced
+
+| Case | `package_count` | `completed_count` | `on_time_count` | `total_delay_minutes` |
+| --- | ---: | ---: | ---: | ---: |
+| Representative day | 5 120 | 4 480 | 3 200 | 96 000 |
+| Representative route | 25 600 | 22 400 | 16 000 | 480 000 |
+| Day + route | 512 | 448 | 320 | 9 600 |
+| Full scan | 256 000 | 224 000 | 160 000 | 4 800 000 |
+
+#### Логические результаты skewed
+
+| Case | `package_count` | `completed_count` | `on_time_count` | `total_delay_minutes` |
+| --- | ---: | ---: | ---: | ---: |
+| Peak day | 20 480 | 17 920 | 12 800 | 384 000 |
+| Off-peak day | 1 280 | 1 120 | 800 | 24 000 |
+| Hot route | 102 400 | 89 600 | 64 000 | 1 920 000 |
+| Cold route | 6 400 | 5 600 | 4 000 | 120 000 |
+| Hot + peak | 8 192 | 7 168 | 5 120 | 153 600 |
+| Hot + off-peak | 512 | 448 | 320 | 9 600 |
+| Cold + peak | 512 | 448 | 320 | 9 600 |
+| Cold + off-peak | 32 | 28 | 20 | 600 |
+| Full scan | 256 000 | 224 000 | 160 000 | 4 800 000 |
+
+#### Eligible records по partition metadata
+
+Обозначения layout: `U` — unpartitioned, `D` — `day(picked_up_at)`, `R` — `bucket(route_id, 4)`, `DR` — composite.
+
+Balanced:
+
+| Query | U | D | R | DR |
+| --- | ---: | ---: | ---: | ---: |
+| Day | 256 000 | 5 120 | 256 000 | 5 120 |
+| Route | 256 000 | 256 000 | 51 200 | 51 200 |
+| Day + route | 256 000 | 5 120 | 51 200 | 1 024 |
+| Full scan | 256 000 | 256 000 | 256 000 | 256 000 |
+
+Skewed exact eligible-record expectations:
+
+- peak day: `D`/`DR` — 20 480;
+- off-peak day: `D`/`DR` — 1 280;
+- representative hot-route bucket: `R`/`DR` — 115 200;
+- representative cold-route bucket: `R`/`DR` — 12 800;
+- hot + peak в `DR` — 9 216;
+- hot + off-peak в `DR` — 576;
+- cold + peak в `DR` — 1 024;
+- cold + off-peak в `DR` — 64;
+- full scan — 256 000 для каждого layout.
+
+Для неподходящего layout соответствующее измерение не исключается: route-only layout не уменьшает eligible records по date predicate, а day-only layout — по route predicate. Eligible-record count может превышать `package_count`, потому что bucket содержит несколько route IDs; bucket pruning не заменяет row filtering.
+
+Runtime contract требует одинаковых логических результатов всех layout, меньшего physical input у подходящего layout относительно `U` и отсутствия pruning в full scan. `DR` для комбинированного predicate должен выбирать строгий subset partition records относительно отдельно `D` и `R`.
+
+### 11.6. File-topology contract
+
+File topology фиксируется инвариантами результата, а не точным числом writer output files:
+
+- каждая из восьми таблиц содержит ровно 256 000 строк;
+- layout `D` содержит ровно 50 непустых day partition tuples;
+- layout `R` содержит ровно 4 непустых bucket tuples;
+- layout `DR` содержит ровно 200 непустых day+bucket tuples;
+- каждый partition tuple содержит хотя бы один data file;
+- фактические partition specs подтверждаются table metadata/`SHOW CREATE TABLE`, а record/file counts и sizes — `$partitions` и `$files`;
+- перед benchmark file-level lower/upper bounds проверяются для representative predicates: внутри уже выбранных partition tuples bounds не должны давать дополнительное исключение файлов, которое подменяет partition-pruning evidence;
+- намеренная сортировка, `sorted_by`, compaction и повторная запись ради оптимизации bounds запрещены.
+
+Точное число files и их individual sizes не являются контрактом, поскольку зависят от Trino writer parallelism и target file size. Write batching и interleaving делегированы реализации только в пределах достижения перечисленных инвариантов без изменения строк, partition specs и workload. Если topology gate не выполнен, benchmark не получает PASS. Допускается предварительный технический probe write protocol на следующем этапе; его результат не вправе ослабить контракт.
+
+### 11.7. Критерии приёмки partitioning/file-pruning slice
+
+#### AC-021 — неизменность завершённых slices и runtime-изоляция
+
+- **Исходные условия:** core vertical slice и schema evolution slice утверждены и завершены; их артефакты определены текущими разделами 1–10.
+- **Действие:** реализовать и выполнить partition benchmark в отдельном task-owned run prefix.
+- **Ожидаемый результат:** benchmark не меняет core/schema-evolution fixtures, модели, таблицы и ожидаемые результаты; не записывает строки в их schemas/object prefixes; все новые таблицы находятся только в task-owned benchmark schema. Если затронут shared path, повторяется acceptance соответствующего завершённого slice.
+- **Способ проверки:** path-scoped diff/fingerprint check, catalog/schema/object listing до и после benchmark, а при shared change — сохранённый PASS затронутого acceptance workflow.
+- **Основание:** прямое решение пользователя не изменять контракты завершённых slices; раздел 11.1 и impact-based boundary.
+
+#### AC-022 — детерминированные balanced и skewed facts
+
+- **Исходные условия:** доступны pinned Trino/Iceberg stack и чистый task-owned benchmark schema.
+- **Действие:** создать balanced и skewed datasets по разделам 11.2–11.4.
+- **Ожидаемый результат:** каждый dataset содержит ровно 256 000 уникальных package rows, 50 UTC pickup-days, 10 routes и typed-схему из восьми колонок. Balanced содержит 512 rows на каждый day-route; skewed содержит 8192/512/512/32 rows для hot+peak/cold+peak/hot+off-peak/cold+off-peak. State cycle даёт точные full-scan агрегаты 256 000/224 000/160 000/4 800 000.
+- **Способ проверки:** `DESCRIBE`, uniqueness/not-null assertions, exact grouped counts по day/route/class, exact full-scan aggregate и проверка timestamp/SLA/state formulas.
+- **Основание:** решения пользователя о размере, skew, схеме и 16-строчном цикле.
+
+#### AC-023 — восемь физических layout и их логическая эквивалентность
+
+- **Исходные условия:** оба логических dataset проходят AC-022.
+- **Действие:** записать каждый dataset в `U`, `D`, `R` и `DR` layout.
+- **Ожидаемый результат:** существуют ровно восемь task-owned benchmark tables; `U` не partitioned, `D` использует `day(picked_up_at)`, `R` — `bucket(route_id, 4)`, `DR` — оба transforms. Все четыре layout одного dataset содержат идентичные строки; все buckets непусты, hot routes находятся в разных buckets; topology равна 50 tuples для `D`, 4 для `R` и 200 для `DR`, каждый tuple имеет data file.
+- **Способ проверки:** `SHOW CREATE TABLE`/table metadata, `system.bucket`, `$partitions`, `$files`, exact row counts, bidirectional set difference или эквивалентная full-row reconciliation между layout.
+- **Основание:** разделы 11.2 и 11.6.
+
+#### AC-024 — balanced workload и pruning
+
+- **Исходные условия:** balanced `U`/`D`/`R`/`DR` проходят AC-023 и topology/bounds gate.
+- **Действие:** выполнить четыре balanced cases из раздела 11.3 против всех layout.
+- **Ожидаемый результат:** агрегаты точно совпадают с balanced-таблицей раздела 11.5. Eligible records соответствуют matrix: day 256000/5120/256000/5120; route 256000/256000/51200/51200; day+route 256000/5120/51200/1024; full scan 256000 для всех. Подходящие `D`, `R` и `DR` показывают меньший physical input относительно `U`; `DR` для combined predicate выбирает строгий subset относительно отдельно `D` и `R`.
+- **Способ проверки:** exact result comparison, `$partitions`/`$files`, `EXPLAIN`, `EXPLAIN ANALYZE` и machine-readable comparison evidence.
+- **Основание:** согласованные exact expectations раздела 11.5.
+
+#### AC-025 — skewed workload и влияние плотности
+
+- **Исходные условия:** skewed `U`/`D`/`R`/`DR` проходят AC-023 и topology/bounds gate.
+- **Действие:** выполнить девять skewed cases из раздела 11.3 против всех layout.
+- **Ожидаемый результат:** агрегаты точно совпадают со skewed-таблицей раздела 11.5. Eligible records равны 20480/1280 для peak/off-peak day в `D`/`DR`, 115200/12800 для hot/cold route bucket в `R`/`DR` и 9216/576/1024/64 для четырёх combined cases в `DR`. Evidence показывает, что одинаковый тип pruning может читать разный объём из-за skew, а bucket pruning оставляет строки других routes того же bucket.
+- **Способ проверки:** exact result comparison, partition/file metadata, plans, physical input и сопоставление hot/cold/peak/off-peak cases.
+- **Основание:** решения пользователя о выраженном независимом skew и exact expectations раздела 11.5.
+
+#### AC-026 — причинность и полнота pruning evidence
+
+- **Исходные условия:** восемь таблиц созданы, но benchmark queries ещё не признаны валидными.
+- **Действие:** выполнить topology/bounds preflight и собрать evidence каждого case.
+- **Ожидаемый результат:** file bounds не дают дополнительного исключения, подменяющего partition pruning; для каждого case сохранены SQL, exact result, partition/file candidates, `EXPLAIN` и `EXPLAIN ANALYZE`; full scan выбирает все tuples/files и не заявляется как pruning. Wall-clock time не влияет на PASS/FAIL.
+- **Способ проверки:** автоматическая полнота evidence matrix 13 cases × 4 layout, bounds assertions, отсутствие пустых test sets и проверка обязательных scan statistics.
+- **Основание:** выбранный структурный evidence contract и file-topology contract.
+
+#### AC-027 — end-to-end регистрация, cleanup и воспроизводимость
+
+- **Исходные условия:** AC-021–AC-026 прошли в уникальном run prefix.
+- **Действие:** сохранить catalog/object evidence, затем удалить только task-owned benchmark schema и остановить только запущенные workflow services согласно исходному состоянию среды.
+- **Ожидаемый результат:** до cleanup Polaris/Trino регистрируют восемь benchmark tables, RustFS содержит их Iceberg data/metadata objects; после cleanup отсутствуют task-owned schema и object prefix, pre-existing volumes сохранены, compaction/snapshot expiration/orphan cleanup не выполнялись. Summary получает PASS только после evidence completeness и cleanup checks.
+- **Способ проверки:** catalog/table listing, bounded object listing, command log, acceptance summary, evidence manifest, secret scan и post-cleanup environment assertions.
+- **Основание:** изоляция среза, существующий безопасный lifecycle pattern проекта и явные исключения раздела 11.1.
+
+### 11.8. Документированные технические основания
+
+Для Trino 484 официальная документация `/trinodb/trino/484` подтверждает:
+
+- Iceberg partition transforms `day(ts)`, `month(ts)`, `bucket(x, n)` и table property `partitioning`;
+- функцию `system.bucket(value, numBuckets)`;
+- metadata tables `$partitions` и `$files` с partition, record count, file count и file size;
+- `EXPLAIN ANALYZE` с scan statistics, включая input rows/bytes и physical input.
+
+Это подтверждает доступность планируемых механизмов, но не является результатом benchmark. Фактическая file topology, pushdown и pruning на pinned stack требуют отдельного выполнения после одобрения спецификации.
+
+### 11.9. Допущения и закрытые вопросы
+
+| ID | Статус | Вопрос | Что блокирует |
+| --- | --- | --- | --- |
+| OPEN-022 | RESOLVED | Зафиксированы 4 balanced и 9 skewed query cases, UTC-range, interior peak/off-peak days и детерминированный bucket-aware выбор representative routes. | Не блокирует. |
+| OPEN-023 | RESOLVED | Зафиксированы восьмиколоночная typed-схема, SLA 48 часов, timestamp-формулы и 16-строчный цикл completed/on-time/delay. | Не блокирует. |
+| OPEN-024 | RESOLVED | Зафиксированы обязательные tuple/count/bounds invariants; exact file count не фиксируется, write batching/interleaving делегированы реализации без права менять данные или workload. | Не блокирует; probe write protocol допустим после одобрения. |
+| OPEN-025 | RESOLVED | Зафиксированы exact query aggregates, balanced matrix и skewed eligible-record expectations для `U`/`D`/`R`/`DR`. | Не блокирует. |
+| OPEN-026 | RESOLVED | Выбрана impact-based регрессия: immutable path/runtime boundary обязателен, полный старый acceptance повторяется только при изменении shared component. | Не блокирует. |
+
+### 11.10. Передача текущего состояния
+
+**Согласовано:** scope и изоляция, два распределения, восемь таблиц, объём и skew, четыре partition layout, workload из 13 cases, typed data contract, exact aggregate results, directional pruning matrix, file-topology invariants, impact-based regression и критерии AC-021–AC-027.
+
+**Текущий вопрос:** явное одобрение пользователем раздела 11 как контракта следующего среза.
+
+**Следующий шаг:** при одобрении изменить только статус раздела 11 с `READY_FOR_APPROVAL` на `APPROVED` и остановить Specify. Реализация, probes и bootstrap автоматически не запускаются.
