@@ -178,7 +178,7 @@ S0 создаётся CTAS с явной проекцией и явным `CAST(
 5. Прочитать P1–P4 текущей схемой; новая колонка должна быть `NULL`.
 6. Выполнить INSERT со старым именем; требовать non-zero и полную неизменность bundle.
 7. Выполнить корректный INSERT `EVO-P5`; получить `S1`, проверить `parent_id=S0` и ровно пять строк.
-8. Выполнить одинаковую явную проекцию для S0, S1 и current; сравнить exact results.
+8. Выполнить snapshot-schema-aware явные проекции для S0, S1 и current, нормализовать их к одному семиколоночному контракту и сравнить exact results.
 9. Выполнить narrowing `BIGINT → INTEGER`; требовать non-zero и неизменность S1/schema/rows/files.
 10. Повторить core regression, собрать evidence и очистить task-owned schemas.
 
@@ -198,27 +198,23 @@ S0 создаётся CTAS с явной проекцией и явным `CAST(
 - Trino 484, `/trinodb/trino/484`: Iceberg connector поддерживает rename/add и widening `INTEGER→BIGINT`; `ADD COLUMN ... AFTER ...`; historical query `FOR VERSION AS OF <snapshot_id>`; metadata tables `$snapshots`, `$files`, `$metadata_log_entries`.
 - Apache Iceberg 1.10.1, `/apache/iceberg/apache-iceberg-1.10.1`: schema evolution является metadata-only; projection идёт по field ID; отсутствующее в старом data file новое поле возвращает `NULL`; новая схема получает отдельный schema ID и становится current schema.
 
-Это подтверждает предлагаемый следующий шаг, но не доказывает OPEN-021 на текущей связке Trino 484 + Polaris 1.8.0 + RustFS 1.0.4.
+Документация подтверждает поддержку snapshot-ID time travel, но фактический запуск SE-IMP-005 уточнил schema-resolution semantics: Trino 484 разрешает historical query по схеме выбранного snapshot, а не по текущей table schema.
 
-### 4.7. Минимальные probes — только будущий запуск
+### 4.7. Результаты минимальных probes
 
-#### SE-PROBE-001 — current-schema projection для старого snapshot
+#### SE-PROBE-001 — historical schema выбранного snapshot — RESOLVED
 
-- **Неизвестность:** Trino 484 должен выполнить явную проекцию текущих имён/типов через `FOR VERSION AS OF S0` после rename/widen/add; именно эта комбинация локально не выполнялась.
-- **Минимальный эксперимент:** в отдельной task-owned smoke schema создать малую Iceberg table, зафиксировать S0, выполнить три одобренных DDL и прочитать S0 явной текущей проекцией.
-- **Ожидаемый сигнал:** renamed value сохранён, widened type читается как BIGINT, новая nullable column равна `NULL`, snapshot ID не меняется.
-- **Стоп:** query resolution error, новый data snapshot, новый Parquet file или позиционное смещение значений.
-- **Изменяемые ресурсы:** одна smoke schema/table и её RustFS prefix.
-- **Очистка:** `DROP SCHEMA ... CASCADE`, проверка пустого task prefix, `docker compose down` без `-v`.
-- **Решение:** при успехе продолжить full runner; при несовпадении остановить реализацию и вернуть OPEN-021/AC-018 в DRAFT, не обходить критерий другой проекцией.
+- **Наблюдение:** после rename/widen/add запрос S0 с текущей колонкой `delivery_priority` завершился `COLUMN_NOT_FOUND` и предложил legacy `delivery_status`; metadata подтверждает schema 0 для S0 и schema 3 для S1/current.
+- **Решение пользователя:** пересмотреть AC-018 без смены pinned stack. S0 читается явной legacy-проекцией и нормализуется через `CAST(NULL AS VARCHAR) AS delivery_priority`, `delivery_status AS current_status` и `CAST(completed_visit_count AS BIGINT)`; S1/current используют актуальную схему.
+- **Критерий:** все три typed-запроса возвращают одинаковую семиколоночную форму и типы `VARCHAR, VARCHAR, VARCHAR, VARCHAR, BIGINT, DOUBLE, BOOLEAN`; S0 содержит 4 строки, S1/current — 5, S1 и current совпадают точно, а отдельные `IS NULL` assertions подтверждают настоящие NULL.
+- **Граница:** это не разрешает скрывать произвольные несовместимости; имена и casts зафиксированы revised AC-018 и проверяются exact assertions.
 
-#### SE-PROBE-002 — metadata JSON и checksum path
+#### SE-PROBE-002 — metadata JSON и checksum path — RESOLVED
 
-- **Неизвестность:** точное сопоставление `$metadata_log_entries.file` и RustFS object key, а также потоковое чтение Parquet для SHA-256 ещё не проверялось новым runner.
-- **Минимальный эксперимент:** на smoke table получить metadata/data paths из Trino, прочитать только metadata JSON в evidence и вычислить SHA-256 data file без сохранения его содержимого.
-- **Ожидаемый сигнал:** один и тот же data object сопоставляется по path/size; digest стабилен до/после schema-only DDL; metadata JSON содержит ожидаемые schema IDs/field IDs.
-- **Стоп:** path выходит за project bucket/prefix, размер не совпадает или helper пытается писать data file вне evidence temp area.
-- **Очистка:** удалить только smoke schema/objects; временный data-file buffer не сохранять.
+- **Наблюдение:** runner сопоставил `$metadata_log_entries.file` и `$files.file_path` с exact RustFS object keys, проверил object sizes и потоково вычислил SHA-256 без сохранения Parquet contents в evidence.
+- **Результат:** S0 data-file identity сохранилась после schema-only DDL; после S1 bundle содержит retained S0 file и один новый одно-record file. Narrowing before/after bundles совпали по path, size, record count и SHA-256.
+- **Metadata evidence:** parsed JSON подтвердил schema IDs 0→1→2→3, сохранённые field IDs rename/widen, новый field ID 7 и snapshot chain S0→S1.
+- **Cleanup:** task-owned schemas и object prefix удалены; evidence сохраняет только metadata text, hashes и bounded listings, но не Parquet contents.
 
 ## 5. План будущих изменений
 
@@ -299,10 +295,10 @@ S0 создаётся CTAS с явной проекцией и явным `CAST(
 
 #### SE-IMP-005 — S0/S1 historical compatibility и narrowing
 
-- **Область:** exact S0/S1/current result comparison; rejected BIGINT→INTEGER с before/after bundle.
+- **Область:** snapshot-schema-aware S0/S1/current projections, нормализованные к общему result contract; exact comparison; rejected BIGINT→INTEGER с before/after bundle.
 - **Вход:** S0 и S1 IDs, полученные из `$snapshots`.
 - **Зависимость:** SE-IMP-004 и одобренное разрешение расхождения порядка из §4.5.
-- **Наблюдаемый выход:** S0=4 rows, S1=current=5 rows; narrowing non-zero; schema BIGINT, S1, rows и file identity неизменны.
+- **Наблюдаемый выход:** legacy S0 projection нормализована к текущим именам/типам и возвращает 4 rows; S1=current=5 rows; narrowing non-zero; schema BIGINT, S1, rows и file identity неизменны.
 - **AC:** AC-018, AC-019.
 - **Откат:** удалить task-owned evolution schema.
 
@@ -326,7 +322,7 @@ S0 создаётся CTAS с явной проекцией и явным `CAST(
 | AC-015 | три DDL по одному + invariant bundle | 7-column schema; S0/file digests неизменны; field IDs корректны; schema ID изменён | `evolution/ddl/01..03/`, metadata comparisons, object deltas |
 | AC-016 | явная current-schema projection до нового INSERT | P1–P4, сохранённые status/counts, BIGINT, priority `NULL` | `evolution/read_compat/current_schema_s0.csv` |
 | AC-017 | old-name INSERT с allowed non-zero, затем корректный INSERT | ошибка не меняет S0; корректный insert создаёт S1 и `EVO-P5` | stderr/exit record, before/after bundles, snapshot chain CSV |
-| AC-018 | одинаковый SELECT `FOR VERSION AS OF S0`, S1 и current | S0=4; S1=current=5; явные колонки; priority semantics соблюдены | три sorted CSV и machine comparison JSON |
+| AC-018 | snapshot-schema-aware typed projections: legacy S0 + current S1/current, нормализованные к одной форме | S0=4; S1=current=5; `VARCHAR×4, BIGINT, DOUBLE, BOOLEAN`; SQL NULL semantics соблюдены | sorted CSV, `typeof`/`IS NULL` CSV, SQL command evidence и machine comparison JSON |
 | AC-019 | narrowing после S1 с allowed non-zero | type остаётся BIGINT; S1/rows/files неизменны | failure log, before/after schema/snapshot/file bundle |
 | AC-020 | полный workflow с catalog/object capture и cleanup | AC-013–019 PASS; одна evolution table до cleanup; zero owned resources после | `acceptance_summary.json`, `commands.jsonl`, Polaris/object evidence, manifest, cleanup JSON, secret scan |
 

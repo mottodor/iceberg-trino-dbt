@@ -387,6 +387,97 @@ def compatibility_state_mismatches(
     )
 
 
+def normalize_historical_rows(rows: list[list[str]]) -> list[list[str]]:
+    """Normalize Trino CSV's empty SQL NULL fields after typed capture."""
+    normalized = [list(row) for row in rows]
+    for row in normalized[1:]:
+        if len(row) != 7:
+            continue
+        for index in (2, 5, 6):
+            if row[index] == "":
+                row[index] = "NULL"
+    return normalized
+
+
+def assert_historical_projection_types(rows: list[list[str]]) -> None:
+    """Require the shared seven-column projection to preserve contract types."""
+    expected = [
+        [
+            "package_id_type",
+            "route_version_id_type",
+            "delivery_priority_type",
+            "current_status_type",
+            "completed_visit_count_type",
+            "delivery_duration_hours_type",
+            "is_on_time_type",
+        ],
+        ["varchar", "varchar", "varchar", "varchar", "bigint", "double", "boolean"],
+    ]
+    if rows != expected:
+        raise AcceptanceError(f"unexpected historical projection types: {rows}")
+
+
+def assert_historical_null_semantics(
+    rows: list[list[str]],
+    *,
+    include_evo_p5: bool,
+) -> None:
+    """Require true SQL NULL semantics for historical nullable fields."""
+    expected = [
+        [
+            "package_id",
+            "delivery_priority_is_null",
+            "delivery_duration_hours_is_null",
+            "is_on_time_is_null",
+        ]
+    ]
+    if include_evo_p5:
+        expected.append(["EVO-P5", "false", "false", "false"])
+    expected.extend(
+        [
+            ["P1", "true", "false", "false"],
+            ["P2", "true", "false", "false"],
+            ["P3", "true", "false", "false"],
+            ["P4", "true", "true", "true"],
+        ]
+    )
+    if rows != expected:
+        raise AcceptanceError(f"unexpected historical NULL semantics: {rows}")
+
+
+def assert_historical_compatibility(
+    s0_rows: list[list[str]],
+    s1_rows: list[list[str]],
+    current_rows: list[list[str]],
+) -> None:
+    """Validate exact current-schema projections for S0, S1, and current."""
+    assert_evolved_rows(s0_rows, include_evo_p5=False)
+    assert_evolved_rows(s1_rows, include_evo_p5=True)
+    assert_evolved_rows(current_rows, include_evo_p5=True)
+    if s1_rows != current_rows:
+        raise AcceptanceError("historical S1 rows do not match the current table")
+
+
+def assert_narrowing_failure(returncode: int, output: str) -> None:
+    """Require the expected BIGINT-to-INTEGER type-change rejection."""
+    normalized = output.lower()
+    sql_type_pair = "bigint" in normalized and "integer" in normalized
+    iceberg_type_pair = "long -> int" in normalized or "long to int" in normalized
+    type_change_failure = (
+        "cannot change column type" in normalized
+        or "unsupported type change" in normalized
+    )
+    if (
+        returncode == 0
+        or "completed_visit_count" not in normalized
+        or not type_change_failure
+        or not (sql_type_pair or iceberg_type_pair)
+    ):
+        raise AcceptanceError(
+            "narrowing DDL did not fail for completed_visit_count BIGINT to INTEGER"
+        )
+
+
 def assert_old_name_insert_failure(returncode: int, output: str) -> None:
     """Require the expected missing-target-column failure for the legacy name."""
     normalized = output.lower()
@@ -522,11 +613,15 @@ class SchemaEvolutionAcceptanceRun(AcceptanceRun):
             ac for ac in SCHEMA_EVOLUTION_ACS if self.ac_results[ac] != "PASS"
         ]
         if pending:
-            next_task = (
-                "SE-IMP-005"
-                if self.ac_results["AC-016"] == self.ac_results["AC-017"] == "PASS"
-                else "SE-IMP-004"
-            )
+            if self.ac_results["AC-018"] == self.ac_results["AC-019"] == "PASS":
+                completed_stage = "historical compatibility and narrowing"
+                next_task = "SE-IMP-006"
+            elif self.ac_results["AC-016"] == self.ac_results["AC-017"] == "PASS":
+                completed_stage = "reader/writer compatibility"
+                next_task = "SE-IMP-005"
+            else:
+                completed_stage = "metadata-only evolution"
+                next_task = "SE-IMP-004"
             self.write_json(
                 "evolution/pending.json",
                 {
@@ -540,7 +635,7 @@ class SchemaEvolutionAcceptanceRun(AcceptanceRun):
                 },
             )
             raise AcceptanceError(
-                "schema-evolution exercise is incomplete after reader/writer compatibility; "
+                f"schema-evolution exercise is incomplete after {completed_stage}; "
                 f"continue with {next_task}"
             )
 
@@ -575,6 +670,7 @@ class SchemaEvolutionAcceptanceRun(AcceptanceRun):
         self.run_metadata_only_ddl_checkpoints()
         self.ac_results["AC-015"] = "PASS"
         self.run_reader_writer_compatibility()
+        self.run_historical_compatibility_and_narrowing()
 
     def evolution_table_name(self) -> str:
         return f'"{CATALOG}"."{self.evolution_schema}"."{EVOLUTION_TABLE}"'
@@ -1177,6 +1273,174 @@ class SchemaEvolutionAcceptanceRun(AcceptanceRun):
             },
         )
         self.ac_results["AC-017"] = "PASS"
+
+    def run_historical_compatibility_and_narrowing(self) -> None:
+        """Prove S0/S1 reads and atomically reject narrowing after S1."""
+        if self.s0_snapshot_id is None or self.s1_snapshot_id is None:
+            raise AcceptanceError("S0/S1 snapshot identities are unavailable")
+
+        table = self.evolution_table_name()
+        s0_projection = f"""
+            SELECT
+                package_id,
+                route_version_id,
+                CAST(NULL AS varchar) AS delivery_priority,
+                delivery_status AS current_status,
+                CAST(completed_visit_count AS bigint) AS completed_visit_count,
+                delivery_duration_hours,
+                is_on_time
+            FROM {table} FOR VERSION AS OF {self.s0_snapshot_id}
+        """
+        current_projection = """
+            SELECT
+                package_id,
+                route_version_id,
+                delivery_priority,
+                current_status,
+                completed_visit_count,
+                delivery_duration_hours,
+                is_on_time
+            FROM {table} {version_clause}
+        """
+        projections = {
+            "s0": s0_projection,
+            "s1": current_projection.format(
+                table=table,
+                version_clause=f"FOR VERSION AS OF {self.s1_snapshot_id}",
+            ),
+            "current": current_projection.format(table=table, version_clause=""),
+        }
+        historical_rows: dict[str, list[list[str]]] = {}
+        historical_types: dict[str, list[list[str]]] = {}
+        historical_nulls: dict[str, list[list[str]]] = {}
+        for name, projection in projections.items():
+            historical_rows[name] = normalize_historical_rows(
+                self.query_csv(
+                    f"evolution/historical/{name}.csv",
+                    f"{projection} ORDER BY package_id",
+                )
+            )
+            historical_types[name] = self.query_csv(
+                f"evolution/historical/{name}_types.csv",
+                f"""
+                SELECT
+                    typeof(package_id) AS package_id_type,
+                    typeof(route_version_id) AS route_version_id_type,
+                    typeof(delivery_priority) AS delivery_priority_type,
+                    typeof(current_status) AS current_status_type,
+                    typeof(completed_visit_count) AS completed_visit_count_type,
+                    typeof(delivery_duration_hours) AS delivery_duration_hours_type,
+                    typeof(is_on_time) AS is_on_time_type
+                FROM ({projection}) AS historical_projection
+                LIMIT 1
+                """,
+            )
+            historical_nulls[name] = self.query_csv(
+                f"evolution/historical/{name}_nulls.csv",
+                f"""
+                SELECT
+                    package_id,
+                    delivery_priority IS NULL AS delivery_priority_is_null,
+                    delivery_duration_hours IS NULL AS delivery_duration_hours_is_null,
+                    is_on_time IS NULL AS is_on_time_is_null
+                FROM ({projection}) AS historical_projection
+                ORDER BY package_id
+                """,
+            )
+            assert_historical_projection_types(historical_types[name])
+            assert_historical_null_semantics(
+                historical_nulls[name],
+                include_evo_p5=name != "s0",
+            )
+
+        assert_historical_compatibility(
+            historical_rows["s0"],
+            historical_rows["s1"],
+            historical_rows["current"],
+        )
+        self.write_json(
+            "evolution/historical/normalized_rows.json",
+            historical_rows,
+        )
+        self.write_json(
+            "evolution/historical/projection_types.json",
+            historical_types,
+        )
+        self.write_json(
+            "evolution/historical/null_semantics.json",
+            historical_nulls,
+        )
+        self.write_json(
+            "evolution/historical/comparison.json",
+            {
+                "S0": self.s0_snapshot_id,
+                "S1": self.s1_snapshot_id,
+                "s0_row_count": len(historical_rows["s0"]) - 1,
+                "s1_row_count": len(historical_rows["s1"]) - 1,
+                "current_row_count": len(historical_rows["current"]) - 1,
+                "s1_matches_current": True,
+                "projection_types_match_contract": True,
+                "null_semantics_match_contract": True,
+            },
+        )
+        self.ac_results["AC-018"] = "PASS"
+
+        before_failure = self.capture_compatibility_state(
+            "evolution/narrowing/before",
+            include_evo_p5=True,
+            snapshot_stage="s1",
+        )
+        narrowing_sql = f"""
+            ALTER TABLE {self.evolution_table_name()}
+            ALTER COLUMN completed_visit_count SET DATA TYPE INTEGER
+        """
+        failure_result = self.run_command(
+            [
+                "docker",
+                "compose",
+                "exec",
+                "-T",
+                "trino",
+                "trino",
+                "--execute",
+                normalize_sql(narrowing_sql),
+            ],
+            "evolution/narrowing/failure.log",
+            allowed_returncodes=set(range(1, 256)),
+        )
+        failure_output = failure_result.stdout + failure_result.stderr
+        assert_narrowing_failure(failure_result.returncode, failure_output)
+        self.write_json(
+            "evolution/narrowing/failure.json",
+            {
+                "returncode": failure_result.returncode,
+                "diagnostic_matches_narrowing": True,
+            },
+        )
+
+        after_failure = self.capture_compatibility_state(
+            "evolution/narrowing/after",
+            include_evo_p5=True,
+            snapshot_stage="s1",
+        )
+        failure_mismatches = compatibility_state_mismatches(
+            before_failure,
+            after_failure,
+        )
+        self.write_json(
+            "evolution/narrowing/comparison.json",
+            {
+                "before": "evolution/narrowing/before",
+                "after": "evolution/narrowing/after",
+                "mismatches": failure_mismatches,
+            },
+        )
+        if failure_mismatches:
+            raise AcceptanceError(
+                "narrowing DDL changed table state: "
+                + ", ".join(failure_mismatches)
+            )
+        self.ac_results["AC-019"] = "PASS"
 
     def capture_compatibility_state(
         self,

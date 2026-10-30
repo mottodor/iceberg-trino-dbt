@@ -1090,3 +1090,94 @@ User reviews the checkpoint and, if accepted, stages and commits `scripts/run_sc
 
 ### Next action
 User reviews the checkpoint and, if accepted, stages and commits `scripts/run_schema_evolution_acceptance.py` and `docs/status.md`; no push or transition to SE-IMP-005 is authorized.
+
+## TASK_ID: SE-IMP-005
+
+- Source: `docs/bootstrap-schema-evolution.md` §5.3, “SE-IMP-005 — S0/S1 historical compatibility и narrowing”; `docs/spec.md` AC-018, AC-019 and AC-020
+- Status: REVIEW_READY
+- Updated: 2026-10-30T11:30:10+03:00
+- Baseline HEAD: 5854963b58a5f97fd1268d7cc6c17f42394d1207
+
+### Progress
+- Implemented: revised AC-018 and the implementation plan for Trino 484 snapshot-schema semantics; added typed legacy S0/current S1 projections, post-capture CSV NULL normalization, exact S0/S1/current rows, `typeof` and `IS NULL` evidence, narrowing diagnostics for SQL/Iceberg type names, full atomic before/after invariants, and the SE-IMP-006 continuation gate. Final run `seimp005_typed` passed AC-013–AC-019, core comparison and cleanup evidence.
+- Remaining: none.
+
+### AC evidence
+| AC / ссылка на источник | Result | Проверка / evidence / причина |
+|---|---|---|
+| `docs/spec.md` AC-018; `docs/bootstrap-schema-evolution.md` §5.3 SE-IMP-005 | PASS | acceptance after reviewer fix: run `seimp005_typed` resolved generated S0 `1258327276937234185` through legacy schema 0 and S1 `4895020360701766093`/current through schema 3. All three projections reported exact types `VARCHAR×4, BIGINT, DOUBLE, BOOLEAN`; S0 had 4 exact rows, S1=current had 5, and separate `IS NULL` evidence proved true priority/duration/on-time NULL semantics. |
+| `docs/spec.md` AC-019; `docs/bootstrap-schema-evolution.md` §5.3 SE-IMP-005 | PASS | acceptance after reviewer fix: Trino rejected `completed_visit_count` narrowing with non-zero `Cannot change column type ... long -> int`; complete before/after schema, S1 snapshot, five typed rows, metadata, objects and SHA-256 file identities were exactly equal, with `completed_visit_count` remaining `BIGINT`. |
+| `docs/spec.md` AC-020, SE-IMP-005 contribution | PASS | fast/acceptance: LSP, `py_compile`, CLI, typed/NULL/diagnostic mutation probes and `git diff --check` passed. Run `seimp005_typed` recorded AC-013–AC-019 PASS, intentionally left AC-020 NOT_RUN with `continue with SE-IMP-006`, matched all nine core contracts, completed clean secret scan and a 742-file manifest, removed all task schemas/objects/containers/network, and preserved the pre-existing project volume. |
+
+### Issues
+#### SE-IMP-005/B01
+- State: RESOLVED
+- Category: ENVIRONMENT
+- Affects: `docs/spec.md` AC-018, AC-019 and AC-020 acceptance evidence
+- Problem: the runtime Compose preflight cannot render because the four required local training environment variables are absent from the current shell.
+- Evidence: `docker compose --profile tools config --quiet` exited 1 and named only `RUSTFS_ACCESS_KEY`, `RUSTFS_SECRET_KEY`, `POLARIS_CLIENT_ID` and `POLARIS_CLIENT_SECRET`; no service was started.
+- Unblock: supply task-local non-production values for those four variables and rerun Compose/port preflight before starting the isolated acceptance workflow.
+- Resolution: with the documented local non-production training values exported only for the command, `docker compose --profile tools config --quiet` exited 0 and ports 8080/8181/9000/9001 were free.
+
+#### SE-IMP-005/B02
+- State: RESOLVED
+- Category: SPEC
+- Affects: `docs/spec.md` AC-018, AC-020 and approved OPEN-021 handling
+- Problem: Trino 484 binds an S0 `FOR VERSION AS OF` query to S0 schema 0, so the required projection using current names `delivery_priority` and `current_status` cannot resolve; the approved AC expects current-schema projection across the old snapshot.
+- Evidence: `evolution/historical/s0.csv.stderr.log` records `Column 'delivery_priority' cannot be resolved. Did you mean 'delivery_status' or 'delivery_duration_hours'?`; current metadata proves S0 uses schema 0 while S1/current use schema 3. The workflow exited 1 and wrote a FAIL summary.
+- Unblock: the product/spec owner must return AC-018/OPEN-021 to DRAFT and choose a supported compatibility contract or approved stack change; implementation must not silently substitute a legacy-schema query or change pinned versions.
+- Resolution: the user approved snapshot-schema-aware normalization without a stack change; `docs/spec.md` and the implementation plan now encode legacy S0 aliases/casts and current S1/current projections. Run `seimp005_revised2` recorded AC-018 PASS before continuing to AC-019.
+
+#### SE-IMP-005/B04
+- State: RESOLVED
+- Category: TEST
+- Affects: revised `docs/spec.md` AC-018 and acceptance EVIDENCE_GATE
+- Problem: Trino CSV serializes `CAST(NULL AS VARCHAR)` as an empty field, while the shared expected-row helper uses the explicit evidence sentinel `NULL` produced by the S1/current projections.
+- Evidence: run `seimp005_revised` passed the historical S0 query itself, then exited 1 after 245.97 seconds on row `['P1', 'R1-V1', '', 'delivered', '1', '4.8E1', 'true']`; cleanup restored the initially stopped environment.
+- Unblock: normalize only the captured S0 `delivery_priority` empty CSV field to the evidence sentinel before exact comparison, retain the SQL-level NULL projection, add a mutation probe, and rerun with a fresh run ID.
+- Resolution: the helper now normalizes only the S0 priority empty field in a copy, a non-null priority mutation is rejected, and run `seimp005_revised2` recorded AC-018 PASS with normalized S0=4 and S1=current=5.
+
+#### SE-IMP-005/B05
+- State: RESOLVED
+- Category: TEST
+- Affects: `docs/spec.md` AC-019 and mandatory EVIDENCE_GATE
+- Problem: the narrowing operation failed correctly, but the diagnostic helper required SQL type words `BIGINT`/`INTEGER` while Trino reported Iceberg type names `long -> int`.
+- Evidence: run `seimp005_revised2` recorded AC-018 PASS, then the DDL exited non-zero with `Failed to set column type: Cannot change column type: completed_visit_count: long -> int`; the helper rejected this relevant failure and the workflow cleaned task resources.
+- Unblock: accept either the SQL type pair or the observed Iceberg type pair while still requiring the target column and non-zero exit, replay positive/unrelated mutations, and confirm the saved run reached no state-changing narrowing operation.
+- Resolution: the helper now requires the target column, a type-change failure class and either `BIGINT/INTEGER` or `long -> int`; saved-output and unrelated-error mutation probes passed. Run `seimp005_final` completed the after-state capture with zero invariant mismatches and AC-019 PASS.
+
+#### SE-IMP-005/B06
+- State: RESOLVED
+- Category: TEST
+- Affects: revised `docs/spec.md` AC-018 and mandatory FRESH_READ_ONLY_REVIEW gate
+- Problem: historical row queries cast typed values to `VARCHAR` and use a string `NULL` sentinel inside SQL for S1/current, so AC-018 can pass without proving the required `BIGINT/DOUBLE/BOOLEAN` result types or true SQL NULL priority semantics.
+- Evidence: the first fresh reviewer traced `scripts/run_schema_evolution_acceptance.py` historical projections and `seimp005_final/commands.jsonl`; `comparison.json` records counts/equality but no expression types, and a literal priority value `'NULL'` would be indistinguishable from SQL NULL in the row assertion. It returned `VERDICT BLOCK`.
+- Unblock: execute typed projections without serialization casts/COALESCE, normalize CSV null encoding only after capture, add `typeof(...)` evidence for the seven result columns and explicit `IS NULL` assertions for nullable fields, then rerun acceptance and fresh review.
+- Resolution: historical SQL now preserves typed values and SQL NULLs; only captured CSV empties are normalized. Type and NULL mutation probes passed, and `seimp005_typed` produced exact `projection_types.json`/`null_semantics.json`, AC-018 PASS and applicable AC-019 evidence.
+
+#### SE-IMP-005/B07
+- State: RESOLVED
+- Category: TEST
+- Affects: mandatory FINAL_EVIDENCE_AND_DIFF_GATE after B06 fix
+- Problem: the first post-fix evidence wrapper rejected any command containing the earlier compatibility-state `COALESCE` serialization, rather than scoping the prohibition to AC-018 historical projections.
+- Evidence: all typed/NULL evidence assertions preceding it passed; diagnostics found `COALESCE` only in `capture_compatibility_state` commands used by AC-016/narrowing bundles, while the historical `FOR VERSION AS OF` commands use typed projections and separate `typeof`/`IS NULL` checks.
+- Unblock: scope the assertion to historical snapshot commands/evidence paths, rerun the complete wrapper without repeating acceptance, and preserve the accepted B06 runtime evidence if it passes.
+- Resolution: the corrected complete wrapper passed with exact typed rows, `typeof`/`IS NULL` evidence, zero narrowing/core mismatches, clean secret scan, 742 manifest files, empty task prefix, no project containers and preserved project volume.
+
+#### SE-IMP-005/B03
+- State: RESOLVED
+- Category: TEST
+- Affects: mandatory FINAL_EVIDENCE_AND_DIFF_GATE
+- Problem: the first post-run evidence wrapper assumed `secret_scan.json` contains a `status` field and stopped before completing cleanup/manifest assertions.
+- Evidence: the wrapper raised `KeyError: 'status'`; the inherited runner's actual secret-scan shape contains `findings` and `secret_values_written` instead.
+- Unblock: assert the existing secret-scan schema, null-safe empty object listing, cleanup logs/environment and manifest list, then rerun the final evidence wrapper without repeating acceptance.
+- Resolution: the corrected wrapper for the earlier blocked run `seimp005_hist` passed with 435 manifest files, empty secret findings, no task-prefix objects, exact five schema drops, no remaining project containers, and preservation of the initially present project volume. The later final run is recorded separately with 734 files.
+
+### Review
+- Verdict: OK
+- Calls: 2
+- Fix iterations: 1
+- Details: the first fresh read-only reviewer returned `VERDICT BLOCK` for B06 and two status/plan improvements. After the targeted typed/NULL evidence fix, final acceptance and documentation corrections, the second fresh reviewer inspected the complete four-file diff and `seimp005_typed` evidence, found no BLOCKER, DEFERRED or IMPROVEMENT, and returned `VERDICT OK`.
+
+### Next action
+After this user-authorized checkpoint commit, await separate authorization for push or transition to SE-IMP-006.

@@ -5,7 +5,7 @@
 **Исходный материал:** [`docs/idea.md`](./idea.md) — задаёт назначение учебного проекта, приобретаемые компетенции и верхнеуровневые границы scope.
 **Основание изменения:** пользователь определил schema evolution следующим срезом, подтвердил завершение core vertical slice и запретил менять его контракты.
 **Роль этого документа:** единая проверяемая спецификация; исходник `docs/idea.md` не изменяется.
-**Одобрение:** core-часть документа была одобрена ранее; пользователь явно одобрил добавленные DEC-028–DEC-033, AC-013–AC-020 и раздел 8 без изменений.
+**Одобрение:** core-часть документа была одобрена ранее; пользователь явно одобрил DEC-028–DEC-033, AC-013–AC-020 и раздел 8. После фактической проверки OPEN-021 пользователь отдельно одобрил пересмотр AC-018 под snapshot-schema semantics Trino 484.
 
 ## 1. Цель и ожидаемый результат
 
@@ -360,11 +360,11 @@ AC-001 и AC-002 следуют из исходника. AC-003–AC-012 явл�
 
 ### AC-018 — совместимость S0 и S1
 
-- **Исходные условия:** доступны snapshot IDs `S0` и `S1`; snapshot expiration не выполнялся.
-- **Действие:** выполнить одинаковую явную проекцию текущей схемы через `FOR VERSION AS OF S0`, `FOR VERSION AS OF S1` и без time-travel clause.
-- **Ожидаемый результат:** `S0` возвращает только `P1`–`P4`, сохраняя статусы и counts, а `delivery_priority` для них равен `NULL`; `S1` и текущая таблица возвращают те же четыре строки плюс `EVO-P5` с `delivery_priority='express'`; результаты `S1` и current совпадают. Запросы не используют `SELECT *`, чтобы совместимость проверялась по явному контракту колонок.
-- **Способ проверки:** три отсортированных result set и их exact comparison; snapshot IDs берутся из `$snapshots`, а не хардкодятся.
-- **Основание:** DEC-030–DEC-032; Trino Iceberg `FOR VERSION AS OF`.
+- **Исходные условия:** доступны snapshot IDs `S0` и `S1`; snapshot expiration не выполнялся. Trino 484 разрешает колонки historical query по схеме выбранного snapshot, поэтому S0 использует schema 0, а S1/current — текущую schema 3.
+- **Действие:** выполнить три явные snapshot-schema-aware проекции, нормализованные к одному семиколоночному контракту. Для `S0` выбрать legacy-колонки, задать `CAST(NULL AS VARCHAR) AS delivery_priority`, переименовать `delivery_status AS current_status` и расширить `completed_visit_count` до `BIGINT`; для `S1` и current использовать актуальные имена и типы. `SELECT *` запрещён.
+- **Ожидаемый результат:** нормализованный `S0` возвращает только `P1`–`P4`, сохраняя статусы и counts, с `delivery_priority=NULL`; `S1` и текущая таблица возвращают те же четыре строки плюс `EVO-P5` с `delivery_priority='express'`; результаты `S1` и current совпадают точно, а все три result set имеют одинаковые имена, порядок и типы колонок.
+- **Способ проверки:** три отсортированных typed result set, exact expected-row assertions и machine comparison нормализованного S1 с current; `typeof(...)` подтверждает типы `VARCHAR, VARCHAR, VARCHAR, VARCHAR, BIGINT, DOUBLE, BOOLEAN`, а отдельные `IS NULL` assertions отличают SQL NULL от строкового литерала. Snapshot IDs берутся из `$snapshots`, а не хардкодятся; command evidence фиксирует historical/current имена.
+- **Основание:** DEC-030–DEC-032; наблюдаемое поведение Trino 484 Iceberg `FOR VERSION AS OF`; пользовательское решение по OPEN-021.
 
 ### AC-019 — запрет сужения типа и атомарность ошибки
 
@@ -417,7 +417,7 @@ Core vertical slice завершён. Его контракты, fixtures и к�
 - различать изменение table metadata/schema ID и создание нового data snapshot;
 - выполнить через Trino безопасные `RENAME COLUMN`, widening type update и `ADD COLUMN`;
 - показать, что schema evolution не требует переписывания существующих Parquet-файлов;
-- объяснить reader compatibility: старые data files читаются через новую схему, а новая nullable-колонка даёт `NULL` для старых строк;
+- объяснить reader compatibility: current table читает старые data files через новую схему, а новая nullable-колонка даёт `NULL` для старых строк; historical query в Trino 484 разрешает колонки по схеме выбранного snapshot и требует явной нормализации контракта;
 - объяснить writer compatibility: после rename запись должна использовать актуальное имя, а narrowing type change отклоняется;
 - сопоставить schema, snapshots, data files и metadata files по фактическим запросам и object-storage evidence.
 
@@ -540,9 +540,9 @@ DESCRIBE <evolution_table>;
 SELECT
     package_id,
     route_version_id,
-    delivery_priority,
-    current_status,
-    completed_visit_count,
+    CAST(NULL AS VARCHAR) AS delivery_priority,
+    delivery_status AS current_status,
+    CAST(completed_visit_count AS BIGINT) AS completed_visit_count,
     delivery_duration_hours,
     is_on_time
 FROM <evolution_table>
@@ -550,7 +550,7 @@ FOR VERSION AS OF <S0>
 ORDER BY package_id;
 ```
 
-Ожидание: только `P1`–`P4`; новое поле равно `NULL`; переименованное поле и widened count сохраняют значения S0.
+Ожидание: Trino разрешает колонки по historical schema 0; нормализованный result set содержит только `P1`–`P4`, новое поле равно `NULL`, legacy-имя отображено в `current_status`, а count расширен до `BIGINT`.
 
 ```sql
 SELECT
@@ -615,7 +615,7 @@ ORDER BY committed_at, snapshot_id;
 | OPEN-006–OPEN-018 | Решены | Grain, события, метрики, маршруты, Gold, pairing и SLA согласованы. | Не блокируют. |
 | OPEN-019 | Решён | Fixture package `P1`–`P4`, DQ-сценарии, допуски и AC-003–AC-009 приняты пользователем. | Не блокирует. |
 | OPEN-020 | Решён core implementation | Интеграция Trino–Polaris и geospatial functions подтверждена завершённым core acceptance workflow. | Не блокирует schema evolution. |
-| OPEN-021 | Требует проверки при реализации, не блокирует одобрение | Комбинация Trino 484 `FOR VERSION AS OF` с текущей схемой после rename/add/widen документарно опирается на Iceberg field IDs и поддержку time travel, но именно этот сценарий в Specify не запускался. | Проверяется AC-018; при несовпадении наблюдаемого поведения затронутый контракт возвращается в DRAFT, а не исправляется молча. |
+| OPEN-021 | Решён реализацией и пользователем | Trino 484 фактически разрешает historical query по схеме выбранного snapshot: попытка выбрать `delivery_priority` из S0 завершилась `COLUMN_NOT_FOUND` и предложила legacy `delivery_status`. Пользователь одобрил snapshot-schema-aware нормализацию S0 к общему семиколоночному контракту; pinned stack не меняется. | AC-018 пересмотрен и требует legacy projection/aliases/casts для S0, current projection для S1/current и exact comparison нормализованных результатов. |
 
 Проверена текущая документация:
 
@@ -684,7 +684,7 @@ Core vertical slice, делегирование и критерии AC-001–AC-
 - реализация должна использовать pinned core stack и отдельный task-owned run prefix;
 - core fixtures, модели и AC-003–AC-012 не изменять;
 - snapshot IDs `S0`/`S1` получать во время запуска из `$snapshots`, не хардкодить;
-- проверить OPEN-021 через AC-018; несовпадение наблюдаемого поведения требует возврата затронутой части в `DRAFT`;
-- изменение ожидаемой совместимости, schema operations или core boundary требует возврата затронутой части в `DRAFT`.
+- OPEN-021 закрыт наблюдаемым поведением Trino 484 и пользовательским пересмотром AC-018: historical S0 читается через schema 0 и явно нормализуется к общему контракту;
+- дальнейшее изменение ожидаемой совместимости, schema operations или core boundary требует возврата затронутой части в `DRAFT`.
 
 Этап Specify завершён со статусом `APPROVED`. Реализация автоматически не запускается.
