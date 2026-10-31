@@ -290,6 +290,216 @@ class DatasetContractTests(unittest.TestCase):
             target.assert_dataset_contract_row(contract, "balanced")
 
 
+class LayoutContractTests(unittest.TestCase):
+    schema = "unit_partition_benchmark"
+
+    def test_layout_sql_builders_encode_exact_unsorted_partitioning(self) -> None:
+        expected = {
+            "d": "partitioning = ARRAY['day(picked_up_at)']",
+            "r": "partitioning = ARRAY['bucket(route_id, 4)']",
+            "dr": (
+                "partitioning = ARRAY['day(picked_up_at)', "
+                "'bucket(route_id, 4)']"
+            ),
+        }
+        for layout, partitioning in expected.items():
+            sql = target.build_layout_sql(
+                "balanced", layout=layout, schema=self.schema
+            )
+            self.assertIn(f'"balanced_{layout}"', sql)
+            self.assertIn('FROM "lakehouse"."unit_partition_benchmark"."balanced_u"', sql)
+            self.assertIn(partitioning, sql)
+            self.assertNotIn("ORDER BY", sql)
+            self.assertNotIn("sorted_by", sql.lower())
+            self.assertNotIn("optimize", sql.lower())
+        with self.assertRaisesRegex(target.AcceptanceError, "U layout"):
+            target.build_layout_sql("balanced", layout="u", schema=self.schema)
+        with self.assertRaisesRegex(target.AcceptanceError, "unknown benchmark layout"):
+            target.build_layout_sql("balanced", layout="x", schema=self.schema)
+
+    def test_table_listing_and_show_create_fail_closed(self) -> None:
+        listing = [["table_name"]] + [
+            [f"{dataset}_{layout}"]
+            for dataset in target.DATASETS
+            for layout in target.LAYOUTS
+        ]
+        listing[1:] = sorted(listing[1:])
+        target.assert_layout_table_listing(listing)
+        with self.assertRaisesRegex(target.AcceptanceError, "unexpected benchmark table"):
+            target.assert_layout_table_listing(listing[:-1])
+
+        for layout, transforms in target.LAYOUT_PARTITIONING.items():
+            partitioning = ""
+            if transforms:
+                values = ",".join(f"'{value}'" for value in transforms)
+                partitioning = f", partitioning = ARRAY[{values}]"
+            rows = [
+                ["Create Table"],
+                [
+                    f"CREATE TABLE lakehouse.{self.schema}.balanced_{layout} ("
+                    "package_id varchar) WITH (format = 'PARQUET'"
+                    f"{partitioning})"
+                ],
+            ]
+            summary = target.assert_show_create_layout(
+                rows,
+                schema=self.schema,
+                dataset="balanced",
+                layout=layout,
+            )
+            self.assertEqual(summary["partitioning"], list(transforms))
+
+        mutated = [
+            ["Create Table"],
+            [
+                f"CREATE TABLE lakehouse.{self.schema}.balanced_dr "
+                "(package_id varchar) WITH (format = 'PARQUET', "
+                "partitioning = ARRAY['day(picked_up_at)'])"
+            ],
+        ]
+        with self.assertRaisesRegex(target.AcceptanceError, "unexpected balanced_dr"):
+            target.assert_show_create_layout(
+                mutated,
+                schema=self.schema,
+                dataset="balanced",
+                layout="dr",
+            )
+
+    def test_layout_contract_reconciliation_and_topology_fail_closed(self) -> None:
+        contract_header = [
+            "layout",
+            "row_count",
+            "unique_packages",
+            "route_count",
+            "day_count",
+            "completed_count",
+            "on_time_count",
+            "total_delay_minutes",
+        ]
+        contract = [contract_header] + [
+            [layout, "256000", "256000", "10", "50", "224000", "160000", "4800000"]
+            for layout in target.LAYOUTS
+        ]
+        target.assert_layout_contract_rows(contract, dataset="balanced")
+        mutated_contract = copy.deepcopy(contract)
+        mutated_contract[-1][1] = "255999"
+        with self.assertRaisesRegex(target.AcceptanceError, "unexpected balanced/dr"):
+            target.assert_layout_contract_rows(mutated_contract, dataset="balanced")
+
+        reconciliation = [
+            ["layout", "u_minus_layout", "layout_minus_u"],
+            ["d", "0", "0"],
+            ["r", "0", "0"],
+            ["dr", "0", "0"],
+        ]
+        target.assert_reconciliation_rows(reconciliation, dataset="balanced")
+        mutated_reconciliation = copy.deepcopy(reconciliation)
+        mutated_reconciliation[-1][2] = "1"
+        with self.assertRaisesRegex(target.AcceptanceError, "differs from U"):
+            target.assert_reconciliation_rows(
+                mutated_reconciliation, dataset="balanced"
+            )
+
+        topology = [[
+            "layout",
+            "tuple_count",
+            "record_count",
+            "min_files_per_tuple",
+            "file_count",
+            "min_records_per_tuple",
+            "max_records_per_tuple",
+        ]]
+        topology.extend(
+            [
+                layout,
+                str(target.LAYOUT_TUPLE_COUNTS[layout]),
+                "256000",
+                "1",
+                str(target.LAYOUT_TUPLE_COUNTS[layout]),
+                "1",
+                "256000",
+            ]
+            for layout in target.LAYOUTS
+        )
+        target.assert_topology_rows(topology, dataset="skewed")
+        mutated_topology = copy.deepcopy(topology)
+        mutated_topology[-1][3] = "0"
+        with self.assertRaisesRegex(target.AcceptanceError, "unexpected skewed/dr"):
+            target.assert_topology_rows(mutated_topology, dataset="skewed")
+
+    def test_file_inventory_and_representative_bounds_contract(self) -> None:
+        rows = [[
+            "content",
+            "file_path",
+            "record_count",
+            "file_format",
+            "file_size_in_bytes",
+            "lower_bounds",
+            "upper_bounds",
+        ], [
+            "0",
+            (
+                "s3://iceberg-trino-dbt/warehouse/unit_partition_benchmark/"
+                "balanced_u-abc/data/file.parquet"
+            ),
+            "256000",
+            "PARQUET",
+            "1000",
+            "{2=BENCH-R0001, 4=2025-03-01 00:00:00.000000 UTC}",
+            "{2=BENCH-R0014, 4=2025-04-19 08:31:00.000000 UTC}",
+        ]]
+        summary = target.assert_file_inventory_rows(
+            rows,
+            schema=self.schema,
+            dataset="balanced",
+            layout="u",
+        )
+        self.assertEqual(summary["record_count"], 256_000)
+        mutated = copy.deepcopy(rows)
+        mutated[1][3] = "ORC"
+        with self.assertRaisesRegex(target.AcceptanceError, "invalid balanced/u"):
+            target.assert_file_inventory_rows(
+                mutated,
+                schema=self.schema,
+                dataset="balanced",
+                layout="u",
+            )
+
+        sql = target.representative_bounds_sql(
+            self.schema,
+            "balanced",
+            route_id="BENCH-R0002",
+            route_bucket=2,
+        )
+        self.assertIn("picked_up_at_day=2025-03-30", sql)
+        self.assertIn("route_id_bucket=2", sql)
+        self.assertIn('lower_bounds."4"', sql)
+        self.assertIn('upper_bounds."2"', sql)
+        self.assertNotIn("ORDER BY picked_up_at", sql)
+
+    def test_residual_object_cleanup_scope_is_exact(self) -> None:
+        prefix = "warehouse/unit_partition_benchmark/"
+        inventory = {
+            "Contents": [
+                {"Key": f"{prefix}a.parquet"},
+                {"Key": f"{prefix}metadata.json"},
+            ]
+        }
+        remaining = {"Contents": [{"Key": f"{prefix}a.parquet"}]}
+        self.assertEqual(
+            target.validate_residual_object_keys(
+                inventory, remaining, prefix=prefix
+            ),
+            [f"{prefix}a.parquet"],
+        )
+        outside = {"Contents": [{"Key": "warehouse/other/a.parquet"}]}
+        with self.assertRaisesRegex(target.AcceptanceError, "ownership mismatch"):
+            target.validate_residual_object_keys(inventory, outside, prefix=prefix)
+        unknown = {"Contents": [{"Key": f"{prefix}unknown.parquet"}]}
+        with self.assertRaisesRegex(target.AcceptanceError, "ownership mismatch"):
+            target.validate_residual_object_keys(inventory, unknown, prefix=prefix)
+
+
 class PlanParserTests(unittest.TestCase):
     schema = "unit_partition_benchmark"
 
@@ -482,7 +692,7 @@ class BoundsAndManifestTests(unittest.TestCase):
 
     def test_manifest_covers_all_52_query_layout_cases(self) -> None:
         required = target.required_final_evidence_paths()
-        self.assertEqual(len(required), 427)
+        self.assertEqual(len(required), 428)
         target.assert_final_evidence_manifest(
             self.manifest(), cleanup=self.cleanup()
         )

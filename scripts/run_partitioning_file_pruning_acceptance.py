@@ -30,6 +30,14 @@ from run_acceptance import (
 
 DATASETS = ("balanced", "skewed")
 LAYOUTS = ("u", "d", "r", "dr")
+LAYOUT_PARTITIONING = {
+    "u": (),
+    "d": ("day(picked_up_at)",),
+    "r": ("bucket(route_id, 4)",),
+    "dr": ("day(picked_up_at)", "bucket(route_id, 4)"),
+}
+LAYOUT_TUPLE_COUNTS = {"u": 1, "d": 50, "r": 4, "dr": 200}
+REPRESENTATIVE_BOUNDS_DAY = date(2025, 3, 30)
 PARTITIONING_FILE_PRUNING_ACS = tuple(
     f"AC-{number:03d}" for number in range(21, 28)
 )
@@ -124,7 +132,8 @@ CASE_EVIDENCE_FILES = {
 REQUIRED_FINAL_EVIDENCE_PATHS = {
     "commands.jsonl",
     "generation/route_mapping.csv",
-    "generation/group_counts.csv",
+    "generation/balanced_group_counts.csv",
+    "generation/skewed_group_counts.csv",
     "layouts/summary.json",
     "runtime/catalog_tables.csv",
     "runtime/polaris_catalog.json",
@@ -413,6 +422,439 @@ def build_dataset_sql(
             delay_minutes
         FROM stated
     """
+
+
+def qualified_benchmark_table(schema: str, dataset: str, layout: str) -> str:
+    """Return one validated quoted benchmark table identity."""
+    if not re.fullmatch(r"[a-z][a-z0-9_]*", schema):
+        raise AcceptanceError(f"invalid benchmark schema: {schema}")
+    if dataset not in DATASETS:
+        raise AcceptanceError(f"unknown benchmark dataset: {dataset}")
+    if layout not in LAYOUTS:
+        raise AcceptanceError(f"unknown benchmark layout: {layout}")
+    return f'"{CATALOG}"."{schema}"."{dataset}_{layout}"'
+
+
+def build_layout_sql(dataset: str, *, layout: str, schema: str) -> str:
+    """Build one unsorted physical layout from the validated U control."""
+    if layout == "u":
+        raise AcceptanceError("the U layout is created by the dataset generator")
+    target = qualified_benchmark_table(schema, dataset, layout)
+    source = qualified_benchmark_table(schema, dataset, "u")
+    transforms = LAYOUT_PARTITIONING[layout]
+    partitioning = ", ".join(f"'{value}'" for value in transforms)
+    columns = ",\n            ".join(name for name, _ in BENCHMARK_COLUMNS)
+    return f"""
+        CREATE TABLE {target}
+        WITH (
+            format = 'PARQUET',
+            partitioning = ARRAY[{partitioning}]
+        ) AS
+        SELECT
+            {columns}
+        FROM {source}
+    """
+
+
+def parse_csv_dict_rows(
+    rows: Sequence[Sequence[str]],
+    *,
+    expected_header: Sequence[str],
+    label: str,
+) -> list[dict[str, str]]:
+    """Parse strict CSV evidence rows into dictionaries."""
+    header = list(expected_header)
+    if not rows or list(rows[0]) != header:
+        raise AcceptanceError(f"invalid {label} header: {rows[:1]}")
+    parsed: list[dict[str, str]] = []
+    for row in rows[1:]:
+        if len(row) != len(header):
+            raise AcceptanceError(f"invalid {label} row: {row}")
+        parsed.append(dict(zip(header, row, strict=True)))
+    return parsed
+
+
+def assert_layout_table_listing(rows: Sequence[Sequence[str]]) -> None:
+    """Require exactly the approved eight benchmark table names."""
+    parsed = parse_csv_dict_rows(
+        rows,
+        expected_header=["table_name"],
+        label="benchmark table listing",
+    )
+    actual = [row["table_name"] for row in parsed]
+    expected = sorted(
+        f"{dataset}_{layout}" for dataset in DATASETS for layout in LAYOUTS
+    )
+    if actual != expected:
+        raise AcceptanceError(f"unexpected benchmark table listing: {actual}")
+
+
+def assert_show_create_layout(
+    rows: Sequence[Sequence[str]],
+    *,
+    schema: str,
+    dataset: str,
+    layout: str,
+) -> dict[str, Any]:
+    """Require the exact table identity and partition transforms without sorting."""
+    if len(rows) != 2 or list(rows[0]) != ["Create Table"] or len(rows[1]) != 1:
+        raise AcceptanceError(f"invalid SHOW CREATE evidence: {rows}")
+    ddl = rows[1][0]
+    normalized = re.sub(r"\s+", " ", ddl).strip().lower()
+    expected_table = f"create table {CATALOG}.{schema}.{dataset}_{layout} ("
+    if not normalized.startswith(expected_table):
+        raise AcceptanceError(f"unexpected SHOW CREATE table identity: {ddl}")
+    if "format = 'parquet'" not in normalized:
+        raise AcceptanceError(f"non-Parquet benchmark table: {dataset}_{layout}")
+    if "sorted_by" in normalized or "order by" in normalized:
+        raise AcceptanceError(f"sorted benchmark layout is forbidden: {dataset}_{layout}")
+    partition_match = re.search(r"partitioning\s*=\s*array\[([^\]]*)\]", normalized)
+    actual_partitioning = (
+        tuple(re.findall(r"'([^']+)'", partition_match.group(1)))
+        if partition_match
+        else ()
+    )
+    expected_partitioning = LAYOUT_PARTITIONING[layout]
+    if actual_partitioning != expected_partitioning:
+        raise AcceptanceError(
+            f"unexpected {dataset}_{layout} partitioning: "
+            f"{actual_partitioning} != {expected_partitioning}"
+        )
+    return {
+        "table": f"{dataset}_{layout}",
+        "partitioning": list(actual_partitioning),
+    }
+
+
+def layout_contract_sql(schema: str, dataset: str) -> str:
+    """Return one four-layout exact aggregate contract query."""
+    branches = []
+    for layout in LAYOUTS:
+        table = qualified_benchmark_table(schema, dataset, layout)
+        branches.append(
+            f"""
+            SELECT
+                '{layout}' AS layout,
+                count(*) AS row_count,
+                count(DISTINCT package_id) AS unique_packages,
+                count(DISTINCT route_id) AS route_count,
+                count(DISTINCT CAST(picked_up_at AS date)) AS day_count,
+                count_if(delivered_at IS NOT NULL) AS completed_count,
+                count_if(is_on_time) AS on_time_count,
+                coalesce(sum(delay_minutes), BIGINT '0') AS total_delay_minutes
+            FROM {table}
+            """
+        )
+    return " UNION ALL ".join(branches) + " ORDER BY layout"
+
+
+def assert_layout_contract_rows(
+    rows: Sequence[Sequence[str]], *, dataset: str
+) -> dict[str, dict[str, int]]:
+    """Require exact row and aggregate contracts for all four layouts."""
+    header = [
+        "layout",
+        "row_count",
+        "unique_packages",
+        "route_count",
+        "day_count",
+        "completed_count",
+        "on_time_count",
+        "total_delay_minutes",
+    ]
+    parsed = parse_csv_dict_rows(
+        rows,
+        expected_header=header,
+        label=f"{dataset} layout contract",
+    )
+    by_layout: dict[str, dict[str, int]] = {}
+    expected = {
+        "row_count": 256_000,
+        "unique_packages": 256_000,
+        "route_count": 10,
+        "day_count": 50,
+        "completed_count": 224_000,
+        "on_time_count": 160_000,
+        "total_delay_minutes": 4_800_000,
+    }
+    for row in parsed:
+        layout = row.pop("layout")
+        if layout not in LAYOUTS or layout in by_layout:
+            raise AcceptanceError(f"invalid or duplicate {dataset} layout: {layout}")
+        actual = {
+            key: parse_int(value, f"{dataset}/{layout} {key}")
+            for key, value in row.items()
+        }
+        if actual != expected:
+            raise AcceptanceError(
+                f"unexpected {dataset}/{layout} contract: {actual} != {expected}"
+            )
+        by_layout[layout] = actual
+    if set(by_layout) != set(LAYOUTS):
+        raise AcceptanceError(
+            f"{dataset} layout contract coverage mismatch: {sorted(by_layout)}"
+        )
+    return by_layout
+
+
+def reconciliation_sql(schema: str, dataset: str) -> str:
+    """Return bidirectional full-row reconciliation against the U control."""
+    control = qualified_benchmark_table(schema, dataset, "u")
+    branches = []
+    for layout in LAYOUTS[1:]:
+        table = qualified_benchmark_table(schema, dataset, layout)
+        branches.append(
+            f"""
+            SELECT
+                '{layout}' AS layout,
+                (SELECT count(*) FROM (TABLE {control} EXCEPT TABLE {table}))
+                    AS u_minus_layout,
+                (SELECT count(*) FROM (TABLE {table} EXCEPT TABLE {control}))
+                    AS layout_minus_u
+            """
+        )
+    return " UNION ALL ".join(branches) + " ORDER BY layout"
+
+
+def assert_reconciliation_rows(
+    rows: Sequence[Sequence[str]], *, dataset: str
+) -> dict[str, dict[str, int]]:
+    """Require zero bidirectional row differences for D/R/DR."""
+    header = ["layout", "u_minus_layout", "layout_minus_u"]
+    parsed = parse_csv_dict_rows(
+        rows,
+        expected_header=header,
+        label=f"{dataset} reconciliation",
+    )
+    by_layout: dict[str, dict[str, int]] = {}
+    for row in parsed:
+        layout = row["layout"]
+        if layout not in LAYOUTS[1:] or layout in by_layout:
+            raise AcceptanceError(
+                f"invalid or duplicate {dataset} reconciliation layout: {layout}"
+            )
+        counts = {
+            key: parse_int(row[key], f"{dataset}/{layout} {key}")
+            for key in header[1:]
+        }
+        if any(counts.values()):
+            raise AcceptanceError(
+                f"{dataset}/{layout} differs from U control: {counts}"
+            )
+        by_layout[layout] = counts
+    if set(by_layout) != set(LAYOUTS[1:]):
+        raise AcceptanceError(
+            f"{dataset} reconciliation coverage mismatch: {sorted(by_layout)}"
+        )
+    return by_layout
+
+
+def topology_sql(schema: str, dataset: str) -> str:
+    """Return aggregate partition/file topology for all four layouts."""
+    branches = []
+    for layout in LAYOUTS:
+        table = qualified_benchmark_table(schema, dataset, layout)
+        metadata = table[:-1] + '$partitions"'
+        branches.append(
+            f"""
+            SELECT
+                '{layout}' AS layout,
+                count(*) AS tuple_count,
+                coalesce(sum(record_count), BIGINT '0') AS record_count,
+                coalesce(min(file_count), BIGINT '0') AS min_files_per_tuple,
+                coalesce(sum(file_count), BIGINT '0') AS file_count,
+                coalesce(min(record_count), BIGINT '0') AS min_records_per_tuple,
+                coalesce(max(record_count), BIGINT '0') AS max_records_per_tuple
+            FROM {metadata}
+            """
+        )
+    return " UNION ALL ".join(branches) + " ORDER BY layout"
+
+
+def assert_topology_rows(
+    rows: Sequence[Sequence[str]], *, dataset: str
+) -> dict[str, dict[str, int]]:
+    """Require 1/50/4/200 non-empty tuples and complete records."""
+    header = [
+        "layout",
+        "tuple_count",
+        "record_count",
+        "min_files_per_tuple",
+        "file_count",
+        "min_records_per_tuple",
+        "max_records_per_tuple",
+    ]
+    parsed = parse_csv_dict_rows(
+        rows,
+        expected_header=header,
+        label=f"{dataset} topology",
+    )
+    by_layout: dict[str, dict[str, int]] = {}
+    for row in parsed:
+        layout = row.pop("layout")
+        if layout not in LAYOUTS or layout in by_layout:
+            raise AcceptanceError(f"invalid or duplicate {dataset} topology: {layout}")
+        actual = {
+            key: parse_int(value, f"{dataset}/{layout} {key}")
+            for key, value in row.items()
+        }
+        if (
+            actual["tuple_count"] != LAYOUT_TUPLE_COUNTS[layout]
+            or actual["record_count"] != 256_000
+            or actual["min_files_per_tuple"] < 1
+            or actual["file_count"] < actual["tuple_count"]
+            or actual["min_records_per_tuple"] < 1
+            or actual["max_records_per_tuple"] < actual["min_records_per_tuple"]
+        ):
+            raise AcceptanceError(
+                f"unexpected {dataset}/{layout} topology: {actual}"
+            )
+        by_layout[layout] = actual
+    if set(by_layout) != set(LAYOUTS):
+        raise AcceptanceError(
+            f"{dataset} topology coverage mismatch: {sorted(by_layout)}"
+        )
+    return by_layout
+
+
+def assert_file_inventory_rows(
+    rows: Sequence[Sequence[str]],
+    *,
+    schema: str,
+    dataset: str,
+    layout: str,
+) -> dict[str, int]:
+    """Require complete positive Parquet data-file metadata and typed bounds."""
+    header = [
+        "content",
+        "file_path",
+        "record_count",
+        "file_format",
+        "file_size_in_bytes",
+        "lower_bounds",
+        "upper_bounds",
+    ]
+    parsed = parse_csv_dict_rows(
+        rows,
+        expected_header=header,
+        label=f"{dataset}/{layout} file inventory",
+    )
+    if not parsed:
+        raise AcceptanceError(f"empty {dataset}/{layout} file inventory")
+    path_anchor = f"/warehouse/{schema}/{dataset}_{layout}-"
+    record_count = 0
+    total_size = 0
+    for row in parsed:
+        if (
+            row["content"] != "0"
+            or row["file_format"] != "PARQUET"
+            or path_anchor not in row["file_path"]
+            or not row["lower_bounds"]
+            or not row["upper_bounds"]
+        ):
+            raise AcceptanceError(
+                f"invalid {dataset}/{layout} data-file evidence: {row}"
+            )
+        record_count += parse_int(
+            row["record_count"], f"{dataset}/{layout} file records"
+        )
+        file_size = parse_int(
+            row["file_size_in_bytes"], f"{dataset}/{layout} file size"
+        )
+        if file_size <= 0:
+            raise AcceptanceError(f"non-positive {dataset}/{layout} file size")
+        total_size += file_size
+    if record_count != 256_000:
+        raise AcceptanceError(
+            f"unexpected {dataset}/{layout} file records: {record_count}"
+        )
+    return {
+        "file_count": len(parsed),
+        "record_count": record_count,
+        "total_size_in_bytes": total_size,
+    }
+
+
+def representative_bounds_sql(
+    schema: str,
+    dataset: str,
+    *,
+    route_id: str,
+    route_bucket: int,
+) -> str:
+    """Return one bounds/no-extra-file-exclusion query for all layouts."""
+    if not re.fullmatch(r"BENCH-R\d{4}", route_id):
+        raise AcceptanceError(f"invalid representative route: {route_id}")
+    if route_bucket not in ROUTE_BUCKET_COUNTS:
+        raise AcceptanceError(f"invalid representative route bucket: {route_bucket}")
+    day_start = REPRESENTATIVE_BOUNDS_DAY.isoformat()
+    day_end = (REPRESENTATIVE_BOUNDS_DAY + timedelta(days=1)).isoformat()
+    branches = []
+    for layout in LAYOUTS:
+        table = qualified_benchmark_table(schema, dataset, layout)
+        metadata = table[:-1] + '$files"'
+        filters = ["content = 0"]
+        if layout in {"d", "dr"}:
+            filters.append(f"file_path LIKE '%/picked_up_at_day={day_start}/%'")
+        if layout in {"r", "dr"}:
+            filters.append(f"file_path LIKE '%/route_id_bucket={route_bucket}/%'")
+        where = " AND ".join(filters)
+        includes_target = f"""
+            lower_bounds."4" < TIMESTAMP '{day_end} 00:00:00 UTC'
+            AND upper_bounds."4" >= TIMESTAMP '{day_start} 00:00:00 UTC'
+            AND lower_bounds."2" <= '{route_id}'
+            AND upper_bounds."2" >= '{route_id}'
+        """
+        branches.append(
+            f"""
+            SELECT
+                '{layout}' AS layout,
+                count(*) AS selected_files,
+                count_if({includes_target}) AS bounds_include_target,
+                count(*) > 0 AND count(*) = count_if({includes_target})
+                    AS no_additional_file_exclusion
+            FROM {metadata}
+            WHERE {where}
+            """
+        )
+    return " UNION ALL ".join(branches) + " ORDER BY layout"
+
+
+def validate_residual_object_keys(
+    inventory: Mapping[str, Any],
+    remaining: Mapping[str, Any],
+    *,
+    prefix: str,
+) -> list[str]:
+    """Return exact owned residual keys or fail closed on cleanup scope."""
+    inventory_contents = inventory.get("Contents") or []
+    remaining_contents = remaining.get("Contents") or []
+    if not isinstance(inventory_contents, list) or not isinstance(
+        remaining_contents, list
+    ):
+        raise AcceptanceError("invalid object inventory shape")
+    inventory_keys: set[str] = set()
+    for item in inventory_contents:
+        key = item.get("Key") if isinstance(item, dict) else None
+        if not isinstance(key, str):
+            raise AcceptanceError("invalid object inventory entry")
+        inventory_keys.add(key)
+    residual_keys: list[str] = []
+    for item in remaining_contents:
+        key = item.get("Key") if isinstance(item, dict) else None
+        if not isinstance(key, str):
+            raise AcceptanceError("invalid residual object listing")
+        residual_keys.append(key)
+    if len(set(residual_keys)) != len(residual_keys):
+        raise AcceptanceError("duplicate residual object key")
+    unsafe = [
+        key
+        for key in residual_keys
+        if not key.startswith(prefix) or key not in inventory_keys
+    ]
+    if unsafe:
+        raise AcceptanceError(f"residual object ownership mismatch: {unsafe[:3]}")
+    return sorted(residual_keys)
 
 
 def assert_benchmark_schema(rows: Sequence[Sequence[str]]) -> None:
@@ -845,6 +1287,7 @@ class PartitioningFilePruningAcceptanceRun(AcceptanceRun):
             for dataset in DATASETS
             for layout in LAYOUTS
         )
+        self.task_object_inventory: dict[str, Any] = {"Contents": []}
 
     def run(self) -> None:
         self.preflight()
@@ -978,17 +1421,146 @@ class PartitioningFilePruningAcceptanceRun(AcceptanceRun):
                 for key, value in contract.items()
             }
 
+        mapping_summary = assert_route_mapping(mapping)
         self.write_json(
             "generation/generation_summary.json",
             {
-                "route_mapping": assert_route_mapping(mapping),
+                "route_mapping": mapping_summary,
                 "datasets": generation_summary,
             },
         )
         self.ac_results["AC-022"] = "PASS"
+
+        for dataset in DATASETS:
+            for layout in LAYOUTS[1:]:
+                sql = build_layout_sql(
+                    dataset,
+                    layout=layout,
+                    schema=self.benchmark_schema,
+                )
+                self.write_text(
+                    f"layouts/{dataset}/{layout}/create.sql", normalize_sql(sql)
+                )
+                self.execute_sql(
+                    f"layouts/{dataset}/{layout}/create.log",
+                    sql,
+                )
+
+        table_rows = self.query_csv(
+            "layouts/table_listing.csv",
+            "SELECT table_name FROM lakehouse.information_schema.tables "
+            f"WHERE table_schema = '{self.benchmark_schema}' ORDER BY table_name",
+        )
+        assert_layout_table_listing(table_rows)
+
+        layout_summary: dict[str, Any] = {}
+        representative_route = str(mapping_summary["representative_cold_route"])
+        representative_bucket = next(
+            parse_int(row["bucket_id"], "representative route bucket")
+            for row in mapping
+            if row["route_id"] == representative_route
+        )
+        for dataset in DATASETS:
+            dataset_summary: dict[str, Any] = {"layouts": {}}
+            for layout in LAYOUTS:
+                table = qualified_benchmark_table(
+                    self.benchmark_schema, dataset, layout
+                )
+                schema_rows = self.query_csv(
+                    f"layouts/{dataset}/{layout}/schema.csv",
+                    f"DESCRIBE {table}",
+                )
+                assert_benchmark_schema(schema_rows)
+                show_create_rows = self.query_csv(
+                    f"layouts/{dataset}/{layout}/show_create.csv",
+                    f"SHOW CREATE TABLE {table}",
+                )
+                show_create = assert_show_create_layout(
+                    show_create_rows,
+                    schema=self.benchmark_schema,
+                    dataset=dataset,
+                    layout=layout,
+                )
+                metadata = table[:-1] + '$files"'
+                file_rows = self.query_csv(
+                    f"layouts/{dataset}/{layout}/files.csv",
+                    "SELECT content, file_path, record_count, file_format, "
+                    "file_size_in_bytes, lower_bounds, upper_bounds "
+                    f"FROM {metadata} WHERE content = 0 ORDER BY file_path",
+                )
+                file_summary = assert_file_inventory_rows(
+                    file_rows,
+                    schema=self.benchmark_schema,
+                    dataset=dataset,
+                    layout=layout,
+                )
+                partitions = table[:-1] + '$partitions"'
+                self.query_csv(
+                    f"layouts/{dataset}/{layout}/partitions.csv",
+                    f"SELECT * FROM {partitions}",
+                )
+                dataset_summary["layouts"][layout] = {
+                    **show_create,
+                    **file_summary,
+                }
+
+            contract_rows = self.query_csv(
+                f"layouts/{dataset}/contract.csv",
+                layout_contract_sql(self.benchmark_schema, dataset),
+            )
+            dataset_summary["contract"] = assert_layout_contract_rows(
+                contract_rows, dataset=dataset
+            )
+            reconciliation_rows = self.query_csv(
+                f"layouts/{dataset}/reconciliation.csv",
+                reconciliation_sql(self.benchmark_schema, dataset),
+            )
+            dataset_summary["reconciliation"] = assert_reconciliation_rows(
+                reconciliation_rows, dataset=dataset
+            )
+            topology_rows = self.query_csv(
+                f"layouts/{dataset}/topology.csv",
+                topology_sql(self.benchmark_schema, dataset),
+            )
+            dataset_summary["topology"] = assert_topology_rows(
+                topology_rows, dataset=dataset
+            )
+            bounds_rows = self.query_csv(
+                f"layouts/{dataset}/representative_bounds.csv",
+                representative_bounds_sql(
+                    self.benchmark_schema,
+                    dataset,
+                    route_id=representative_route,
+                    route_bucket=representative_bucket,
+                ),
+            )
+            bounds = parse_csv_dict_rows(
+                bounds_rows,
+                expected_header=[
+                    "layout",
+                    "selected_files",
+                    "bounds_include_target",
+                    "no_additional_file_exclusion",
+                ],
+                label=f"{dataset} representative bounds",
+            )
+            assert_bounds_decisions(bounds)
+            dataset_summary["representative_bounds"] = bounds
+            layout_summary[dataset] = dataset_summary
+
+        self.write_json(
+            "layouts/summary.json",
+            {
+                "representative_day": REPRESENTATIVE_BOUNDS_DAY.isoformat(),
+                "representative_route": representative_route,
+                "representative_route_bucket": representative_bucket,
+                "datasets": layout_summary,
+            },
+        )
+        self.ac_results["AC-023"] = "PASS"
         raise AcceptanceError(
-            "partitioning/file-pruning behavior checks are incomplete: "
-            "continue with PF-IMP-002"
+            "partitioning/file-pruning workload checks are incomplete: "
+            "continue with PF-IMP-003"
         )
 
     def execute_sql(self, relative_path: str, sql: str) -> None:
@@ -1081,7 +1653,68 @@ class PartitioningFilePruningAcceptanceRun(AcceptanceRun):
             FROM checked
         """
 
+    def delete_owned_object_keys(self, keys: Sequence[str]) -> None:
+        """Delete only exact task-owned residual keys in AWS API batches."""
+        batch_size = 1000
+        summaries = []
+        for batch_number, start in enumerate(range(0, len(keys), batch_size), start=1):
+            batch = list(keys[start : start + batch_size])
+            payload = json.dumps(
+                {"Objects": [{"Key": key} for key in batch], "Quiet": False},
+                separators=(",", ":"),
+            )
+            result = self.capture(
+                [
+                    "docker",
+                    "compose",
+                    "run",
+                    "--rm",
+                    "--no-deps",
+                    "--entrypoint",
+                    "aws",
+                    "bucket-setup",
+                    "s3api",
+                    "delete-objects",
+                    "--bucket",
+                    "iceberg-trino-dbt",
+                    "--delete",
+                    payload,
+                    "--output",
+                    "json",
+                ],
+                f"cleanup/delete_objects_{batch_number}.json",
+            )
+            try:
+                response = json.loads(result.stdout or "{}")
+            except json.JSONDecodeError as error:
+                raise AcceptanceError(
+                    "invalid RustFS delete-objects response"
+                ) from error
+            if not isinstance(response, dict):
+                raise AcceptanceError("invalid RustFS delete-objects response")
+            errors = response.get("Errors") or []
+            if errors:
+                raise AcceptanceError(
+                    f"RustFS residual-object deletion errors: {errors[:3]}"
+                )
+            summaries.append(
+                {
+                    "batch": batch_number,
+                    "requested": len(batch),
+                    "deleted": len(response.get("Deleted") or []),
+                }
+            )
+        self.write_json(
+            "cleanup/delete_objects_summary.json",
+            {"requested": len(keys), "batches": summaries},
+        )
+
     def cleanup_task_data(self) -> None:
+        prefix = f"warehouse/{self.benchmark_schema}/"
+        self.task_object_inventory = self.list_objects(prefix)
+        self.write_json(
+            "cleanup/pre_drop_object_inventory.json", self.task_object_inventory
+        )
         result = self.capture(
             [
                 "docker",
@@ -1111,9 +1744,15 @@ class PartitioningFilePruningAcceptanceRun(AcceptanceRun):
                 f"benchmark schema remains after cleanup: {remaining_schemas[1:]}"
             )
 
-        remaining_objects = self.list_objects(
-            f"warehouse/{self.benchmark_schema}/"
+        remaining_objects = self.list_objects(prefix)
+        residual_keys = validate_residual_object_keys(
+            self.task_object_inventory,
+            remaining_objects,
+            prefix=prefix,
         )
+        if residual_keys:
+            self.delete_owned_object_keys(residual_keys)
+            remaining_objects = self.list_objects(prefix)
         self.write_json("cleanup/remaining_objects.json", remaining_objects)
         if remaining_objects.get("Contents"):
             raise AcceptanceError(

@@ -1507,3 +1507,48 @@ User reviews the checkpoint and, if accepted, stages and commits `scripts/run_pa
 
 ### Next action
 User reviews the checkpoint and, if accepted, stages and commits `scripts/run_partitioning_file_pruning_acceptance.py`, `scripts/tests/test_partitioning_file_pruning_acceptance.py`, and `docs/status.md`; no push or transition to PF-IMP-002 is authorized.
+
+## TASK_ID: PF-IMP-002
+
+- Source: `docs/bootstrap-partitioning-file-pruning.md` §5.3, “PF-IMP-002 — eight layouts, reconciliation и topology gate”; `docs/spec.md` §11.2, §11.6, AC-023 and AC-026
+- Status: REVIEW_READY
+- Updated: 2026-10-31T19:02:15+03:00
+- Baseline HEAD: 42df7c62c562f7a931f1a1827dee0ac25e6091bc
+
+### Progress
+- Implemented: added unsorted D/R/DR CTAS layouts from each validated U control, exact eight-table/schema/partition-spec/aggregate/full-row reconciliation assertions, `$partitions`/`$files` topology and typed representative-bounds gates, exact-inventory residual-object cleanup, and fail-closed mutation tests. Isolated run `pfimp002_layouts` passed the PF-IMP-002 behavior gates, reached the intentional PF-IMP-003 continuation stop, and restored the initially stopped environment.
+- Remaining: none.
+
+### AC evidence
+| AC / ссылка на источник | Result | Проверка / evidence / причина |
+|---|---|---|
+| `docs/spec.md` AC-023; `docs/bootstrap-partitioning-file-pruning.md` §5.3 PF-IMP-002 | PASS | acceptance: run `pfimp002_layouts` registered exactly eight tables. Both datasets had four identical 256000-row layouts with exact aggregate `256000/224000/160000/4800000`, zero bidirectional full-row differences, partition specs U/D/R/DR, tuple counts 1/50/4/200, at least one Parquet file per tuple and complete `$files` record totals. The runner recorded `AC-023=PASS` before the intentional PF-IMP-003 stop. |
+| `docs/spec.md` AC-026, PF-IMP-002 contribution | PASS | fast/acceptance: 28 unit tests include partition/spec/count/reconciliation/file/bounds/cleanup mutations; LSP, `py_compile` and whitespace checks passed. For balanced and skewed, representative day `2025-03-30` plus route `BENCH-R0002` selected one file in every applicable U/D/R/DR tuple/control and every selected file's typed route/time bounds retained the target. No sorting or maintenance operation appears in generated SQL/commands. |
+
+### Issues
+#### PF-IMP-002/B01
+- State: RESOLVED
+- Category: TEST
+- Affects: mandatory fast test suite and future final evidence-manifest gate
+- Problem: replacing the obsolete single `generation/group_counts.csv` requirement with the two dataset-specific evidence paths increased the exact required manifest count, but the existing unit assertion still expects the old count.
+- Evidence: `python3 -m unittest -v scripts.tests.test_partitioning_file_pruning_acceptance` ran 23 tests and failed only `test_manifest_covers_all_52_query_layout_cases`: expected 427 paths, actual 428.
+- Unblock: update the pure manifest expectation and add PF-IMP-002 layout/topology/cleanup mutation coverage, then rerun the complete suite.
+- Resolution: the manifest expectation now covers 428 required paths; five new layout/topology/file/bounds/cleanup tests include row, partition, format, reconciliation, bounds and ownership mutations. The complete 28-test suite exited 0; `py_compile`, LSP diagnostics and `git diff --check` also passed.
+
+#### PF-IMP-002/B02
+- State: RESOLVED
+- Category: TEST
+- Affects: mandatory FINAL_EVIDENCE_AND_DIFF_GATE
+- Problem: the first post-run evidence wrapper imposed an uncontracted minimum of 100 manifest entries and stopped after validating the business/layout/cleanup evidence but before completing its hash/required-path assertions.
+- Evidence: the wrapper raised `AssertionError` at `len(entries) >= 100`; direct inspection shows a valid 98-file manifest containing all required PF-IMP-002 evidence, with every listed size and SHA-256 matching.
+- Unblock: remove the arbitrary count threshold, require the exact task evidence paths and valid hashes instead, then rerun the complete post-run wrapper.
+- Resolution: the corrected wrapper validated all 98 manifest entries by size/SHA-256 and required every generation/layout/contract/reconciliation/topology/file/bounds/cleanup path. It also confirmed 71 commands, clean secret scan, header-only remaining-schema evidence, empty final prefix, 479 exact inventoried residual keys deleted, no project containers/ports, and preserved pre-existing volumes.
+
+### Review
+- Verdict: OK
+- Calls: 1
+- Fix iterations: 0
+- Details: one fresh read-only reviewer inspected the complete three-file diff, source AC, code/tests/status, all eight layout/spec/contract/reconciliation/topology/bounds evidence sets, the 71-command journal, 98-file manifest, exact-inventory deletion of 479 residual keys and final environment restoration. It found no BLOCKER, DEFERRED or IMPROVEMENT and returned `VERDICT: OK`.
+
+### Next action
+User reviews the checkpoint and, if accepted, stages and commits `scripts/run_partitioning_file_pruning_acceptance.py`, `scripts/tests/test_partitioning_file_pruning_acceptance.py`, and `docs/status.md`; no push or transition to PF-IMP-003 is authorized.
