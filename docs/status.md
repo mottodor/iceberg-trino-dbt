@@ -1276,19 +1276,19 @@ User reviews the checkpoint and, if accepted, stages and commits `docs/status.md
 
 - Source: `docs/bootstrap-partitioning-file-pruning.md` §4.8, “PART-PROBE-002 — plan/stats capture”; supporting contract `docs/spec.md` §11.3–§11.7
 - Status: REVIEW_READY
-- Updated: 2026-10-31T00:41:59+03:00
-- Baseline HEAD: c3470bc8ab1a160833f4fa9e8b91018a473ede35
+- Updated: 2026-10-31T19:27:19+03:00
+- Baseline HEAD: 3f411d60361717a512cd9ef359ac8aa906a314bf
 
 ### Progress
-- Implemented: started the isolated pinned stack; established ownership and the exact 3/3/2/2 route mapping; created balanced `U/D/R/DR`; captured exact results, distributed JSON, IO JSON and `EXPLAIN ANALYZE` for date/route/combined across all four layouts; matched IO estimates and runtime input rows to partition metadata; fixed a fail-closed parser/summary contract with mutation evidence and a bounded query-protocol fallback; removed the exact schema and residual object keys; restored the initially stopped environment.
+- Implemented: revalidated the committed PART-PROBE-002 result without changing project code. The source contract and pinned stack configuration are unchanged since commit `e527f1a`; all 171 manifest entries match size/SHA-256, all 12 saved captures satisfy the exact result/scan/constraint/eligible-row/runtime contracts, the seven-case fail-closed parser replay passes, and current cleanup state remains stopped with ports free and the project volume preserved.
 - Remaining: none.
 
 ### AC evidence
 | AC / ссылка на источник | Result | Проверка / evidence / причина |
 |---|---|---|
-| `docs/bootstrap-partitioning-file-pruning.md` §4.8 PART-PROBE-002, one Iceberg scan and visible partition constraint | PASS | acceptance: all 12 query-layout captures contain exactly one task-schema `ScanProject`/`ScanFilterProject`; `EXPLAIN (TYPE IO, FORMAT JSON)` exposes the expected date/route query-column constraints and its output-row estimate exactly matches `$partitions` eligible records (date 256000/5120/256000/5120, route 256000/256000/51200/51200, combined 256000/5120/51200/1024 for U/D/R/DR). Trino 484 distributed descriptors visibly mark the day constraint but not the hidden bucket transform; this limitation is explicitly preserved rather than misreported. |
-| `docs/bootstrap-partitioning-file-pruning.md` §4.8 PART-PROBE-002, parseable physical input and expected relative reduction | PASS | acceptance: every `EXPLAIN ANALYZE` scan yielded input rows, bytes, physical input and splits. Date physical input was U=977920B, D=11940B, DR=33070B; route U=977920B, R=377110B, DR=401650B; combined U=977920B, D=11940B, R=377110B, DR=8030B, with DR strictly below D and R. All layouts returned the exact 5120/4480/3200/96000, 25600/22400/16000/480000 and 512/448/320/9600 aggregates. |
-| `docs/bootstrap-partitioning-file-pruning.md` §4.8 PART-PROBE-002, parser/summary decision and isolated cleanup | PASS | acceptance: `workload/parser_contract.json` fixes the Trino-484 composite summary schema (distributed scan cardinality + IO constraints/eligible estimate + runtime physical stats); the manifest-covered `replay_parser_mutations.py` reproduced seven positive/fail-closed cases with deterministic patches and captured actual errors, and `/v1/statement` final stats were validated only as a bounded runtime fallback. The run captured 271 objects, explicitly deleted 161 exact-prefix residual keys after catalog purge, left the schema/prefix empty, restored Compose stopped with ports free and the pre-existing volume preserved, produced a clean secret scan and a 171-file manifest including `probe_summary.json`. |
+| `docs/bootstrap-partitioning-file-pruning.md` §4.8 PART-PROBE-002, one Iceberg scan and visible partition constraint | PASS | standard revalidation: source diff from task commit `e527f1a` is empty for the specification, plan, Compose/infra and shared runner paths. The 171-file manifest hash check passed; all 12 summaries retain exactly one owned distributed/runtime scan, one IO input, expected date/route query-column constraints and IO estimates equal to `$partitions` eligible records. |
+| `docs/bootstrap-partitioning-file-pruning.md` §4.8 PART-PROBE-002, parseable physical input and expected relative reduction | PASS | standard revalidation: all 12 summaries retain positive physical input/splits and runtime input rows equal to eligible metadata. Exact aggregates match for every layout; D/DR reduce date input, R/DR reduce route input, all partitioned layouts reduce combined input versus U, and combined DR remains below D and R. |
+| `docs/bootstrap-partitioning-file-pruning.md` §4.8 PART-PROBE-002, parser/summary decision and isolated cleanup | PASS | fast/standard revalidation: `python3 workload/replay_parser_mutations.py` exited 0 with seven detected positive/fail-closed cases in 59 ms. The complete evidence assertion exited 0 in 252 ms, verifying 171 hashes, parser contract/fallback, 271 pre-cleanup and 161 exact-key residual objects, empty final schema/prefix, clean secret scan and saved environment restoration. Current Docker state has no project containers, ports 8080/8181/9000/9001 are free, and `iceberg-trino-dbt_rustfs-data` is preserved. |
 
 ### Issues
 #### PART-PROBE-002/B01
@@ -1347,12 +1347,12 @@ User reviews the checkpoint and, if accepted, stages and commits `docs/status.md
 
 ### Review
 - Verdict: OK
-- Calls: 2
-- Fix iterations: 1
-- Details: reviewer call 1 independently confirmed scan/result/metadata/runtime reduction/cleanup claims and returned `VERDICT BLOCK` for non-reproducible mutation evidence. After the targeted replay/manifest/port-evidence fix, reviewer call 2 inspected the complete corrected diff and ignored evidence, confirmed B06 resolution and all counters, found no BLOCKER, DEFERRED or IMPROVEMENT, and returned `VERDICT OK`.
+- Calls: 1
+- Fix iterations: 0
+- Details: one fresh read-only reviewer inspected the complete status-only diff, source AC, all 12 saved summaries, parser contract/replay, 171-file manifest, cleanup/secret evidence and neighboring status boundaries. It independently confirmed the scan/constraint/result/runtime claims, the documented Trino-484 bucket-descriptor limitation, evidence applicability without a costly rerun, current-attempt counters and preservation of other task sections; no BLOCKER, DEFERRED or IMPROVEMENT was found, and it returned `VERDICT: OK`.
 
 ### Next action
-User reviews the checkpoint and, if accepted, stages and commits `docs/status.md`; no push or transition to PF-ENV-001 is authorized.
+User reviews this revalidation checkpoint and, if accepted, stages and commits `docs/status.md`; no push or additional task is authorized.
 
 ## TASK_ID: PF-ENV-001
 
