@@ -500,6 +500,144 @@ class LayoutContractTests(unittest.TestCase):
             target.validate_residual_object_keys(inventory, unknown, prefix=prefix)
 
 
+class BalancedWorkloadTests(unittest.TestCase):
+    schema = "unit_partition_benchmark"
+
+    def metadata(self, layout: str, case: str) -> tuple[list[list[str]], list[list[str]]]:
+        partitions = [["pickup_day", "route_bucket", "record_count", "file_count", "total_size"]]
+        files = [["file_path", "record_count", "file_size_in_bytes", "bounds_include_target"]]
+        # Independent fixture: one file for every partition tuple in the universe.
+        days = [f"2025-03-{i:02d}" for i in range(1, 32)] + [f"2025-04-{i:02d}" for i in range(1, 20)]
+        if layout not in {"d", "dr"}:
+            days = [""]
+        elif case in {"day", "day_route"}:
+            days = ["2025-03-30"]
+        buckets = ["0", "1", "2", "3"] if layout in {"r", "dr"} else [""]
+        if layout in {"r", "dr"} and case in {"route", "day_route"}:
+            buckets = ["2"]
+        for day in days:
+            for bucket in buckets:
+                routes = {"": 10, "0": 3, "1": 3, "2": 2, "3": 2}[bucket]
+                records = 512 * routes * (1 if day else 50)
+                path = f"s3://bucket/warehouse/{self.schema}/balanced_{layout}-uuid/data/"
+                if day:
+                    path += f"picked_up_at_day={day}/"
+                if bucket:
+                    path += f"route_id_bucket={bucket}/"
+                path += "file.parquet"
+                partitions.append([day, bucket, str(records), "1", "1000"])
+                files.append([path, str(records), "1000", "true"])
+        return partitions, files
+
+    def comparison(self) -> dict[str, Any]:
+        logical = {
+            "day": (5120, 4480, 3200, 96000),
+            "route": (25600, 22400, 16000, 480000),
+            "day_route": (512, 448, 320, 9600),
+            "full_scan": (256000, 224000, 160000, 4800000),
+        }
+        eligible = {
+            "day": (256000, 5120, 256000, 5120),
+            "route": (256000, 256000, 51200, 51200),
+            "day_route": (256000, 5120, 51200, 1024),
+            "full_scan": (256000, 256000, 256000, 256000),
+        }
+        return {
+            case: {
+                layout: {
+                    "result": dict(zip(("package_count", "completed_count", "on_time_count", "total_delay_minutes"), logical[case], strict=True)),
+                    "candidates": {"record_count": records},
+                    "io": {"estimate": {"outputRowCount": records}},
+                    "runtime": {"input_rows": records, "physical_input_bytes": records, "splits": 1},
+                }
+                for layout, records in zip(("u", "d", "r", "dr"), eligible[case], strict=True)
+            }
+            for case in logical
+        }
+
+    def test_queries_use_approved_predicates_and_identical_projection(self) -> None:
+        for case in ("day", "route", "day_route", "full_scan"):
+            for layout in ("u", "d", "r", "dr"):
+                sql = target.balanced_query_sql(self.schema, layout, case, "BENCH-R0002")
+                self.assertIn(f'"balanced_{layout}"', sql)
+                self.assertIn("count_if(delivered_at IS NOT NULL)", sql)
+                self.assertNotIn("CAST(picked_up_at", sql)
+                self.assertEqual("WHERE" in sql, case != "full_scan")
+                self.assertEqual("picked_up_at >=" in sql, case in {"day", "day_route"})
+                self.assertEqual("route_id =" in sql, case in {"route", "day_route"})
+        with self.assertRaisesRegex(target.AcceptanceError, "unknown balanced"):
+            target.balanced_query_sql(self.schema, "u", "other", "BENCH-R0002")
+        with self.assertRaisesRegex(target.AcceptanceError, "invalid representative"):
+            target.balanced_query_sql(self.schema, "u", "route", "bad'route")
+
+    def test_all_sixteen_candidate_selections_and_metadata_sql(self) -> None:
+        for case in ("day", "route", "day_route", "full_scan"):
+            for layout in ("u", "d", "r", "dr"):
+                partitions, files = self.metadata(layout, case)
+                summary = target.assert_balanced_candidates(partitions, files, schema=self.schema, layout=layout, case=case)
+                expected = self.comparison()[case][layout]["candidates"]["record_count"]
+                self.assertEqual(summary["record_count"], expected)
+                partition_sql, file_sql = target.balanced_candidate_sql(self.schema, layout, case, "BENCH-R0002", 2)
+                self.assertEqual("partition.picked_up_at_day =" in partition_sql, layout in {"d", "dr"} and case in {"day", "day_route"})
+                self.assertEqual("partition.route_id_bucket =" in partition_sql, layout in {"r", "dr"} and case in {"route", "day_route"})
+                self.assertNotIn("bounds", file_sql.split("WHERE")[1])
+                self.assertEqual(summary["file_count"], len(files) - 1)
+
+    def test_candidate_mutations_fail_closed(self) -> None:
+        for mutation in ("empty_partitions", "empty_files", "missing_tuple", "wrong_tuple", "duplicate_file", "wrong_records", "wrong_size", "null_bounds", "foreign_file"):
+            partitions, files = self.metadata("dr", "day_route")
+            if mutation == "empty_partitions":
+                partitions = partitions[:1]
+            elif mutation == "empty_files":
+                files = files[:1]
+            elif mutation == "missing_tuple":
+                partitions[1][1] = ""
+            elif mutation == "wrong_tuple":
+                partitions[1][0] = "2025-03-29"
+            elif mutation == "duplicate_file":
+                files.append(files[1][:])
+            elif mutation == "wrong_records":
+                files[1][1] = "512"
+            elif mutation == "wrong_size":
+                files[1][2] = "999"
+            elif mutation == "null_bounds":
+                files[1][3] = ""
+            else:
+                files[1][0] = files[1][0].replace(self.schema, "foreign")
+            with self.subTest(mutation=mutation), self.assertRaises(target.AcceptanceError):
+                target.assert_balanced_candidates(partitions, files, schema=self.schema, layout="dr", case="day_route")
+
+    def test_comparison_rejects_missing_results_stats_and_false_reductions(self) -> None:
+        self.assertEqual(target.assert_balanced_comparison(self.comparison())["query_layout_count"], 16)
+        for mutation in ("missing_case", "missing_layout", "wrong_aggregate", "null_aggregate", "wrong_eligible", "wrong_runtime", "zero_bytes", "zero_splits", "wrong_io", "no_reduction", "pruned_full_scan"):
+            cases = self.comparison()
+            value = cases["day_route"]["dr"]
+            if mutation == "missing_case":
+                cases.pop("full_scan")
+            elif mutation == "missing_layout":
+                cases["day"].pop("r")
+            elif mutation == "wrong_aggregate":
+                value["result"]["completed_count"] = 447
+            elif mutation == "null_aggregate":
+                value["result"]["on_time_count"] = ""
+            elif mutation == "wrong_eligible":
+                value["candidates"]["record_count"] = 512
+            elif mutation == "wrong_runtime":
+                value["runtime"]["input_rows"] = 512
+            elif mutation == "zero_bytes":
+                value["runtime"]["physical_input_bytes"] = 0
+            elif mutation == "zero_splits":
+                value["runtime"]["splits"] = 0
+            elif mutation == "wrong_io":
+                value["io"]["estimate"]["outputRowCount"] = 512
+            elif mutation == "no_reduction":
+                value["runtime"]["physical_input_bytes"] = 256000
+            else:
+                cases["full_scan"]["dr"]["runtime"]["input_rows"] = 1024
+            with self.subTest(mutation=mutation), self.assertRaises(target.AcceptanceError):
+                target.assert_balanced_comparison(cases)
+
+
 class PlanParserTests(unittest.TestCase):
     schema = "unit_partition_benchmark"
 
@@ -615,6 +753,19 @@ class PlanParserTests(unittest.TestCase):
                 schema=self.schema,
                 expected_constraints={"route_id"},
             )
+
+    def test_plan_parsers_reject_extra_foreign_scan_or_input(self) -> None:
+        distributed = self.distributed_document()
+        distributed["2"] = copy.deepcopy(distributed["1"])
+        distributed["2"]["children"][0]["descriptor"]["table"] = "lakehouse:foreign.other$data@123"
+        with self.assertRaisesRegex(target.AcceptanceError, "got 2"):
+            target.parse_distributed_plan(json.dumps(distributed), schema=self.schema)
+        io = self.io_document()
+        foreign = copy.deepcopy(io["inputTableColumnInfos"][0])
+        foreign["table"]["schemaTable"]["schema"] = "foreign"
+        io["inputTableColumnInfos"].append(foreign)
+        with self.assertRaisesRegex(target.AcceptanceError, "got 2"):
+            target.parse_io_plan(json.dumps(io), schema=self.schema, expected_constraints=set())
 
     def test_explain_analyze_requires_one_scan_and_physical_input(self) -> None:
         text = self.analyze_text()

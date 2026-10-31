@@ -1032,6 +1032,192 @@ def assert_eligible_records(
         )
 
 
+def balanced_predicate(case: str, route_id: str) -> str:
+    """Return only approved raw-column predicates for the balanced workload."""
+    if case not in DATASET_CASES["balanced"]:
+        raise AcceptanceError(f"unknown balanced case: {case}")
+    if not re.fullmatch(r"BENCH-R\d{4}", route_id):
+        raise AcceptanceError(f"invalid representative route: {route_id}")
+    predicates = []
+    if case in {"day", "day_route"}:
+        predicates.append(
+            "picked_up_at >= TIMESTAMP '2025-03-30 00:00:00 UTC' "
+            "AND picked_up_at < TIMESTAMP '2025-03-31 00:00:00 UTC'"
+        )
+    if case in {"route", "day_route"}:
+        predicates.append(f"route_id = '{route_id}'")
+    return " AND ".join(predicates)
+
+
+def balanced_query_sql(schema: str, layout: str, case: str, route_id: str) -> str:
+    """Use the same four aggregate expressions for all sixteen executions."""
+    table = qualified_benchmark_table(schema, "balanced", layout)
+    predicate = balanced_predicate(case, route_id)
+    return f"""
+        SELECT count(*) AS package_count,
+            count_if(delivered_at IS NOT NULL) AS completed_count,
+            count_if(is_on_time) AS on_time_count,
+            coalesce(sum(delay_minutes), BIGINT '0') AS total_delay_minutes
+        FROM {table}
+        {('WHERE ' + predicate) if predicate else ''}
+    """
+
+
+def balanced_candidate_sql(
+    schema: str, layout: str, case: str, route_id: str, route_bucket: int,
+) -> tuple[str, str]:
+    """Select metadata by partition identity, never by file bounds."""
+    table = qualified_benchmark_table(schema, "balanced", layout)
+    predicate = balanced_predicate(case, route_id)
+    if route_bucket != 2:
+        raise AcceptanceError("balanced representative must use bucket 2")
+    day = "partition.picked_up_at_day" if layout in {"d", "dr"} else "''"
+    bucket = "partition.route_id_bucket" if layout in {"r", "dr"} else "''"
+    partition_filters = []
+    file_filters = ["content = 0"]
+    if case in {"day", "day_route"} and layout in {"d", "dr"}:
+        partition_filters.append("partition.picked_up_at_day = DATE '2025-03-30'")
+        file_filters.append("file_path LIKE '%/picked_up_at_day=2025-03-30/%'")
+    if case in {"route", "day_route"} and layout in {"r", "dr"}:
+        partition_filters.append(f"partition.route_id_bucket = {route_bucket}")
+        file_filters.append(f"file_path LIKE '%/route_id_bucket={route_bucket}/%'")
+    partitions = f"""
+        SELECT cast({day} AS varchar) AS pickup_day,
+            cast({bucket} AS varchar) AS route_bucket,
+            record_count, file_count, total_size
+        FROM {table[:-1]}$partitions"
+        {('WHERE ' + ' AND '.join(partition_filters)) if partition_filters else ''}
+    """
+    # Typed bounds are used only to prove that candidates are NOT further pruned.
+    bounds = []
+    if "picked_up_at" in predicate:
+        bounds.append(
+            'lower_bounds."4" < TIMESTAMP \'2025-03-31 00:00:00 UTC\' '
+            'AND upper_bounds."4" >= TIMESTAMP \'2025-03-30 00:00:00 UTC\''
+        )
+    if "route_id" in predicate:
+        bounds.append(f'lower_bounds."2" <= \'{route_id}\' AND upper_bounds."2" >= \'{route_id}\'')
+    files = f"""
+        SELECT file_path, record_count, file_size_in_bytes,
+            {' AND '.join(bounds) if bounds else 'TRUE'} AS bounds_include_target
+        FROM {table[:-1]}$files"
+        WHERE {' AND '.join(file_filters)}
+        ORDER BY file_path
+    """
+    return partitions, files
+
+
+def balanced_expected_tuples(layout: str, case: str) -> dict[tuple[str, str], int]:
+    """Independently enumerate the approved balanced partition universe."""
+    if layout not in LAYOUTS or case not in DATASET_CASES["balanced"]:
+        raise AcceptanceError(f"unknown balanced selection: {case}/{layout}")
+    days = [""]
+    if layout in {"d", "dr"}:
+        days = [(PICKUP_START_DATE + timedelta(days=i)).isoformat() for i in range(50)]
+        if case in {"day", "day_route"}:
+            days = ["2025-03-30"]
+    buckets = [""]
+    if layout in {"r", "dr"}:
+        buckets = ["0", "1", "2", "3"]
+        if case in {"route", "day_route"}:
+            buckets = ["2"]
+    return {
+        (day, bucket): 512 * (1 if day else 50) * (
+            ROUTE_BUCKET_COUNTS[parse_int(bucket, "expected bucket")] if bucket else 10
+        )
+        for day in days for bucket in buckets
+    }
+
+
+def balanced_file_tuple(path: str, *, schema: str, layout: str) -> tuple[str, str]:
+    """Bind a pinned writer path to its complete day/bucket identity."""
+    anchor = f"/warehouse/{schema}/balanced_{layout}-"
+    if anchor not in path:
+        raise AcceptanceError(f"foreign balanced data file: {path}")
+    days = re.findall(r"/picked_up_at_day=([^/]+)/", path)
+    buckets = re.findall(r"/route_id_bucket=([^/]+)/", path)
+    if len(days) != (1 if layout in {"d", "dr"} else 0) or len(buckets) != (1 if layout in {"r", "dr"} else 0):
+        raise AcceptanceError(f"invalid file partition identity: {path}")
+    return (days[0] if days else "", buckets[0] if buckets else "")
+
+
+def assert_balanced_candidates(
+    partition_rows: Sequence[Sequence[str]], file_rows: Sequence[Sequence[str]],
+    *, schema: str, layout: str, case: str,
+) -> dict[str, int]:
+    """Require exact tuples and reconcile every candidate file with metadata."""
+    partitions = parse_csv_dict_rows(
+        partition_rows,
+        expected_header=["pickup_day", "route_bucket", "record_count", "file_count", "total_size"],
+        label="balanced candidate partitions",
+    )
+    expected = balanced_expected_tuples(layout, case)
+    by_tuple = {}
+    for row in partitions:
+        key = (row["pickup_day"], row["route_bucket"])
+        if key not in expected or key in by_tuple:
+            raise AcceptanceError(f"invalid or duplicate candidate tuple: {key}")
+        actual = tuple(parse_int(row[name], name) for name in ("record_count", "file_count", "total_size"))
+        if actual[0] != expected[key] or min(actual[1:]) <= 0:
+            raise AcceptanceError(f"invalid candidate partition counts: {key}: {actual}")
+        by_tuple[key] = actual
+    if set(by_tuple) != set(expected):
+        raise AcceptanceError("balanced candidate tuple coverage mismatch")
+    files = parse_csv_dict_rows(
+        file_rows,
+        expected_header=["file_path", "record_count", "file_size_in_bytes", "bounds_include_target"],
+        label="balanced candidate files",
+    )
+    seen = set()
+    totals = {key: [0, 0, 0] for key in expected}
+    for row in files:
+        path = row["file_path"]
+        key = balanced_file_tuple(path, schema=schema, layout=layout)
+        if path in seen or key not in totals:
+            raise AcceptanceError(f"duplicate or ineligible candidate file: {path}")
+        seen.add(path)
+        records = parse_int(row["record_count"], "candidate file records")
+        size = parse_int(row["file_size_in_bytes"], "candidate file size")
+        if min(records, size) <= 0 or row["bounds_include_target"].lower() != "true":
+            raise AcceptanceError("candidate file bounds/counts violate pruning isolation")
+        totals[key][0] += records
+        totals[key][1] += 1
+        totals[key][2] += size
+    if any(tuple(totals[key]) != by_tuple[key] for key in expected):
+        raise AcceptanceError("candidate file/partition reconciliation mismatch")
+    return {
+        "tuple_count": len(expected), "file_count": len(files),
+        "record_count": sum(value[0] for value in by_tuple.values()),
+        "total_size_in_bytes": sum(value[2] for value in by_tuple.values()),
+    }
+
+
+def assert_balanced_comparison(cases: Mapping[str, Any]) -> dict[str, Any]:
+    """Gate AC-024 on all sixteen exact results, metadata and real scan stats."""
+    if set(cases) != set(DATASET_CASES["balanced"]):
+        raise AcceptanceError("balanced case coverage mismatch")
+    reductions = {"day": ("d", "dr"), "route": ("r", "dr"), "day_route": ("d", "r", "dr")}
+    for case, layouts in cases.items():
+        if set(layouts) != set(LAYOUTS):
+            raise AcceptanceError(f"balanced layout coverage mismatch: {case}")
+        assert_eligible_records({layout: value["candidates"]["record_count"] for layout, value in layouts.items()}, "balanced", case)
+        for layout, value in layouts.items():
+            assert_case_aggregate(value["result"], "balanced", case)
+            records = value["candidates"]["record_count"]
+            runtime = value["runtime"]
+            if runtime["input_rows"] != records or runtime["physical_input_bytes"] <= 0 or runtime["splits"] <= 0:
+                raise AcceptanceError(f"invalid balanced runtime scan: {case}/{layout}")
+            if value["io"]["estimate"]["outputRowCount"] != records:
+                raise AcceptanceError(f"IO estimate/metadata mismatch: {case}/{layout}")
+        for layout in reductions.get(case, ()):
+            if layouts[layout]["runtime"]["physical_input_bytes"] >= layouts["u"]["runtime"]["physical_input_bytes"]:
+                raise AcceptanceError(f"physical input not reduced: {case}/{layout}")
+    combined = cases["day_route"]
+    if not all(combined["dr"]["candidates"]["record_count"] < combined[layout]["candidates"]["record_count"] for layout in ("d", "r")):
+        raise AcceptanceError("combined DR is not a strict subset of D and R")
+    return {"case_count": 4, "query_layout_count": 16, "exact_results": True, "eligible_matrix": True, "physical_input_reductions": True, "full_scan_unpruned": True}
+
+
 def parse_byte_size(value: str) -> int:
     """Parse Trino's decimal B/kB/MB/GB sizes into rounded bytes."""
     match = SIZE_PATTERN.fullmatch(value.strip())
@@ -1080,8 +1266,9 @@ def parse_distributed_plan(raw: str, *, schema: str) -> dict[str, Any]:
             f"lakehouse:{schema}."
         )
     ]
-    if len(scans) != 1:
-        raise AcceptanceError(f"expected one Iceberg scan, got {len(scans)}")
+    total_scans = [node for node in nodes if node.get("name") in SCAN_NAMES]
+    if len(scans) != 1 or len(total_scans) != 1:
+        raise AcceptanceError(f"expected one Iceberg scan, got {len(total_scans)}")
     scan = scans[0]
     descriptor = scan.get("descriptor", {})
     table_anchor = str(descriptor.get("table", ""))
@@ -1118,8 +1305,8 @@ def parse_io_plan(
         and item.get("table", {}).get("catalog") == CATALOG
         and item.get("table", {}).get("schemaTable", {}).get("schema") == schema
     ]
-    if len(owned) != 1:
-        raise AcceptanceError(f"expected one IO input table, got {len(owned)}")
+    if len(owned) != 1 or len(input_infos) != 1:
+        raise AcceptanceError(f"expected one IO input table, got {len(input_infos)}")
     item = owned[0]
     constraints = item.get("constraint", {}).get("columnConstraints", [])
     if not isinstance(constraints, list):
@@ -1558,10 +1745,67 @@ class PartitioningFilePruningAcceptanceRun(AcceptanceRun):
             },
         )
         self.ac_results["AC-023"] = "PASS"
+        self.run_balanced_workload(representative_route, representative_bucket)
+        self.ac_results["AC-024"] = "PASS"
         raise AcceptanceError(
             "partitioning/file-pruning workload checks are incomplete: "
-            "continue with PF-IMP-003"
+            "continue with PF-IMP-004"
         )
+
+    def run_balanced_workload(self, route_id: str, route_bucket: int) -> None:
+        cases: dict[str, Any] = {}
+        for case in DATASET_CASES["balanced"]:
+            cases[case] = {}
+            constraints = set()
+            if case in {"day", "day_route"}:
+                constraints.add("picked_up_at")
+            if case in {"route", "day_route"}:
+                constraints.add("route_id")
+            for layout in LAYOUTS:
+                base = f"workload/balanced/{case}/{layout}"
+                sql = normalize_sql(balanced_query_sql(self.benchmark_schema, layout, case, route_id))
+                self.write_text(f"{base}/query.sql", sql)
+                rows = self.query_csv(f"{base}/result.csv", sql)
+                result = parse_csv_dict_rows(rows, expected_header=list(expected_case_aggregate("balanced", case)), label="balanced result")
+                if len(result) != 1:
+                    raise AcceptanceError("balanced query must return exactly one aggregate row")
+                assert_case_aggregate(result[0], "balanced", case)
+                partition_sql, file_sql = balanced_candidate_sql(self.benchmark_schema, layout, case, route_id, route_bucket)
+                partition_rows = self.query_csv(f"{base}/partitions.csv", partition_sql)
+                file_rows = self.query_csv(f"{base}/files.csv", file_sql)
+                candidates = assert_balanced_candidates(partition_rows, file_rows, schema=self.benchmark_schema, layout=layout, case=case)
+                distributed_raw = self.capture_plan(f"{base}/explain.json", f"EXPLAIN (TYPE DISTRIBUTED, FORMAT JSON) {sql}")
+                io_raw = self.capture_plan(f"{base}/explain_io.json", f"EXPLAIN (TYPE IO, FORMAT JSON) {sql}")
+                runtime_raw = self.capture_plan(f"{base}/explain_analyze.txt", f"EXPLAIN ANALYZE {sql}")
+                distributed = parse_distributed_plan(distributed_raw, schema=self.benchmark_schema)
+                io = parse_io_plan(io_raw, schema=self.benchmark_schema, expected_constraints=constraints)
+                runtime = parse_explain_analyze(runtime_raw, schema=self.benchmark_schema)
+                table_name = f"balanced_{layout}"
+                anchor = f"{CATALOG}:{self.benchmark_schema}.{table_name}$data@"
+                if (
+                    not distributed["table_anchor"].startswith(anchor)
+                    or io["table"]["schemaTable"]["table"] != table_name
+                    or f"[table = {anchor}" not in runtime["scan_anchor"]
+                    or set(io["constraint_columns"]) != constraints
+                ):
+                    raise AcceptanceError(f"wrong balanced scan identity/constraints: {case}/{layout}")
+                summary = {"result": result[0], "candidates": candidates, "distributed": distributed, "io": io, "runtime": runtime}
+                self.write_json(f"{base}/summary.json", summary)
+                cases[case][layout] = summary
+        comparison = assert_balanced_comparison(cases)
+        self.write_json("workload/balanced/comparison.json", {**comparison, "cases": cases})
+
+    def capture_plan(self, path: str, sql: str) -> str:
+        is_json = path.endswith(".json")
+        raw = self.capture(
+            ["docker", "compose", "exec", "-T", "trino", "trino",
+             "--output-format", "TSV" if is_json else "ALIGNED",
+             "--execute", normalize_sql(sql)],
+            f"{path}.tsv" if is_json else path,
+        ).stdout
+        if is_json:
+            self.write_json(path, decode_cli_json(raw))
+        return raw
 
     def execute_sql(self, relative_path: str, sql: str) -> None:
         self.capture(

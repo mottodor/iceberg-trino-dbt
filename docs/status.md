@@ -1552,3 +1552,47 @@ User reviews the checkpoint and, if accepted, stages and commits `scripts/run_pa
 
 ### Next action
 User reviews the checkpoint and, if accepted, stages and commits `scripts/run_partitioning_file_pruning_acceptance.py`, `scripts/tests/test_partitioning_file_pruning_acceptance.py`, and `docs/status.md`; no push or transition to PF-IMP-003 is authorized.
+
+## TASK_ID: PF-IMP-003
+
+- Source: `docs/bootstrap-partitioning-file-pruning.md` §5.3, “PF-IMP-003 — balanced workload”; `docs/spec.md` §11.3, §11.5 and AC-024; runtime permissions boundary in the plan §7
+- Status: REVIEW_READY
+- Updated: 2026-10-31T19:54:37+03:00
+- Baseline HEAD: 87d695db3c0b84e70b41ea54bac27716243b286f
+
+### Progress
+- Implemented: added balanced raw-column SQL for four cases across four layouts, exact candidate tuple/file reconciliation with per-case bounds isolation, result/plan/runtime capture and fail-closed comparison gates. All 33 unit tests, compilation, CLI, LSP diagnostics and 12 saved Trino-484 parser replays passed. Isolated run `pfimp003_balanced` confirmed all sixteen AC-024 cells and actual-evidence mutations, then reached the intentional PF-IMP-004 continuation gate. The corrected final wrapper validated all 263 manifest hashes, cleanup and environment restoration; only the two readiness retries were non-zero among 169 journaled commands. Initial diff was the main agent's prior task status append, not unrelated work.
+- Remaining: none within PF-IMP-003; PF-IMP-004–006 and completed slices remain out of scope.
+
+### AC evidence
+| AC / ссылка на источник | Result | Проверка / evidence / причина |
+|---|---|---|
+| `docs/spec.md` AC-024; `docs/bootstrap-partitioning-file-pruning.md` §5.3 PF-IMP-003 | PASS | acceptance: `python3 scripts/run_partitioning_file_pruning_acceptance.py --run-id pfimp003_balanced` (task-local training environment) recorded AC-022/023/024 PASS; exit 1 is the intended PF-IMP-004 stop, not overall slice acceptance. `artifacts/acceptance/pfimp003_balanced/workload/balanced/` contains all 16 SQL/result/partition/file/distributed/IO/runtime/summary bundles and `comparison.json`. Exact four-metric results match §11.5; U/D/R/DR eligible rows are day 256000/5120/256000/5120, route 256000/256000/51200/51200, combined 256000/5120/51200/1024, full scan 256000 each. Matching layouts reduce physical input: combined bytes 977880/12260/378880/8410; DR's 1024 records are strictly below D/R. Full scan retains all tuples/files and 256000 runtime input rows per layout. Standard replay revalidated every raw bundle, rejected actual-result/input-row/no-reduction mutations, and verified 263 hashes, clean secret scan, empty schema/prefix, 479 exact inventoried residual keys deleted, stopped services/free ports and three preserved project/probe volumes. Fast: 33 unit tests, compilation/CLI/whitespace PASS; active LSP found zero diagnostics. |
+
+### Issues
+#### PF-IMP-003/B01
+- State: RESOLVED
+- Category: PERMISSION
+- Affects: PRECHECK, EVIDENCE_GATE and `docs/spec.md` AC-024
+- Problem: required runtime actions are not explicitly authorized under the approved plan's separate-permission boundary.
+- Evidence: `docs/bootstrap-partitioning-file-pruning.md` §6 step 3 and §7 require separate permission for Docker, ports, task-owned writes and cleanup; the current invocation is PF-IMP-003 only. Read-only `docker compose ps --all` exited 1 during interpolation because the four required local environment variables are unset; no runtime assertion ran and no service was started. Direct Docker label inspection subsequently exited 0 and found no project containers.
+- Unblock: user explicitly authorizes the pinned Compose stack on ports 8080/8181/9000/9001, task-local non-production environment values, unique benchmark schema/object-prefix writes and exact task-owned cleanup, with initial service-state restoration and all pre-existing volumes preserved. No image/version/dependency changes or volume deletion are requested.
+- Resolution: the current user request explicitly states “PF-IMP-003 разрешаю docker runtime-действия”, answering the bounded runtime-permission request; PRECHECK re-established initial_stopped and the distinguishable status-only baseline. No versions, dependencies or volume deletion are authorized.
+
+#### PF-IMP-003/B02
+- State: RESOLVED
+- Category: TEST
+- Affects: FINAL_EVIDENCE_AND_DIFF_GATE
+- Problem: the first post-run wrapper incorrectly requires every journaled command to return zero, rejecting the inherited bounded query-readiness retries before completing its final environment assertions.
+- Evidence: acceptance `pfimp003_balanced` recorded AC-022/023/024 PASS and stopped at the intended PF-IMP-004 continuation gate (exit 1, measured 339.897 seconds). Raw sixteen-case replay, actual aggregate/runtime/physical-input mutations, cleanup/secret checks and all 263 manifest hashes passed before the wrapper assertion. Journal inspection found 169 commands, with only two non-zero `SELECT 1 AS ready` attempts before successful readiness; business commands succeeded.
+- Unblock: verify the two readiness diagnostics, require subsequent successful readiness and all behavior/cleanup commands to succeed, then rerun the corrected evidence wrapper without repeating acceptance.
+- Resolution: both saved readiness errors are exactly “Trino server is still initializing”; the corrected wrapper required readiness exits [1,1,0] with final CSV ready=1 and all other 166 commands successful. It exited 0 after replaying sixteen raw evidence bundles, three actual-evidence mutations, all 263 hashes, final cleanup/ports/volumes and immutable-path checks; no acceptance rerun was needed.
+
+### Review
+- Verdict: OK
+- Calls: 1
+- Fix iterations: 0
+- Details: one fresh read-only built-in reviewer (read/grep/find/ls/watchdog_diff/contact_supervisor, no bash/write/edit) inspected the complete three-file diff, all sixteen summaries and raw SQL/results/runtime captures, representative complete raw bundles, comparison/topology/manifest/cleanup/readiness/secret evidence and this status section with prior-section preservation. It returned VERDICT OK within PF-IMP-003/AC-024, with zero BLOCKER, DEFERRED or IMPROVEMENT; it did not independently execute hash/unittest/LSP assertions. Post-review Git scope/whitespace and stopped-environment/volume checks remained consistent.
+
+### Next action
+User reviews the checkpoint and, if accepted, stages and commits `scripts/run_partitioning_file_pruning_acceptance.py`, `scripts/tests/test_partitioning_file_pruning_acceptance.py`, and `docs/status.md`; no push or transition to PF-IMP-004 is authorized.
