@@ -10,6 +10,7 @@ import json
 import re
 import sys
 from collections.abc import Iterable, Mapping, Sequence
+from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
 from typing import Any
@@ -22,6 +23,7 @@ from run_acceptance import (
     ROOT,
     RUN_ID_PATTERN,
     iso_now,
+    normalize_sql,
     parse_float,
     parse_int,
 )
@@ -32,6 +34,21 @@ PARTITIONING_FILE_PRUNING_ACS = tuple(
     f"AC-{number:03d}" for number in range(21, 28)
 )
 ROUTE_BUCKET_COUNTS = {0: 3, 1: 3, 2: 2, 3: 2}
+ROUTE_CANDIDATE_LIMIT = 128
+PICKUP_START_DATE = date(2025, 3, 1)
+PICKUP_DAY_COUNT = 50
+PEAK_DAY_COUNT = 10
+BENCHMARK_COLUMNS = (
+    ("package_id", "varchar"),
+    ("route_id", "varchar"),
+    ("route_version_id", "varchar"),
+    ("picked_up_at", "timestamp(6) with time zone"),
+    ("promised_delivery_at", "timestamp(6) with time zone"),
+    ("delivered_at", "timestamp(6) with time zone"),
+    ("is_on_time", "boolean"),
+    ("delay_minutes", "bigint"),
+)
+DATASET_PREFIXES = {"balanced": "BAL", "skewed": "SKW"}
 DATASET_CASES = {
     "balanced": ("day", "route", "day_route", "full_scan"),
     "skewed": (
@@ -160,6 +177,15 @@ def assert_route_mapping(mapping: Sequence[Mapping[str, Any]]) -> dict[str, Any]
     if len(mapping) != 10:
         raise AcceptanceError(f"route mapping has {len(mapping)} rows, expected 10")
     route_ids = [str(row.get("route_id")) for row in mapping]
+    invalid_route_ids = [
+        route_id
+        for route_id in route_ids
+        if not re.fullmatch(r"BENCH-R\d{4}", route_id)
+    ]
+    if invalid_route_ids:
+        raise AcceptanceError(
+            f"route mapping contains invalid route IDs: {invalid_route_ids}"
+        )
     if len(set(route_ids)) != len(route_ids):
         raise AcceptanceError("route mapping contains duplicate route IDs")
 
@@ -228,6 +254,266 @@ def group_size(dataset: str, *, peak: bool, hot: bool) -> int:
     if hot or peak:
         return 512
     return 32
+
+
+def route_mapping_sql() -> str:
+    """Return the pinned Iceberg bucket-aware route-selection query."""
+    return f"""
+        WITH candidates AS (
+            SELECT
+                format('BENCH-R%04d', sequential_number) AS route_id,
+                {CATALOG}.system.bucket(
+                    format('BENCH-R%04d', sequential_number),
+                    4
+                ) AS bucket_id
+            FROM TABLE(sequence(start => 1, stop => {ROUTE_CANDIDATE_LIMIT}))
+        ), ranked AS (
+            SELECT
+                route_id,
+                bucket_id,
+                row_number() OVER (
+                    PARTITION BY bucket_id ORDER BY route_id
+                ) AS bucket_rank
+            FROM candidates
+        )
+        SELECT
+            route_id,
+            bucket_id,
+            bucket_rank,
+            bucket_id IN (0, 1) AND bucket_rank = 1 AS is_hot
+        FROM ranked
+        WHERE (bucket_id IN (0, 1) AND bucket_rank <= 3)
+           OR (bucket_id IN (2, 3) AND bucket_rank <= 2)
+        ORDER BY bucket_id, bucket_rank
+    """
+
+
+def parse_route_mapping_rows(rows: Sequence[Sequence[str]]) -> list[dict[str, Any]]:
+    """Parse route-mapping CSV evidence and revalidate the exact contract."""
+    expected_header = ["route_id", "bucket_id", "bucket_rank", "is_hot"]
+    if not rows or list(rows[0]) != expected_header:
+        raise AcceptanceError(f"invalid route mapping header: {rows[:1]}")
+    mapping: list[dict[str, Any]] = []
+    for row in rows[1:]:
+        if len(row) != len(expected_header):
+            raise AcceptanceError(f"invalid route mapping row: {row}")
+        hot_value = row[3].lower()
+        if hot_value not in {"true", "false"}:
+            raise AcceptanceError(f"invalid route hot flag: {row[3]}")
+        mapping.append(
+            {
+                "route_id": row[0],
+                "bucket_id": parse_int(row[1], "route bucket ID"),
+                "bucket_rank": parse_int(row[2], "route bucket rank"),
+                "is_hot": hot_value == "true",
+            }
+        )
+    assert_route_mapping(mapping)
+    return mapping
+
+
+def build_dataset_sql(
+    dataset: str,
+    *,
+    schema: str,
+    mapping: Sequence[Mapping[str, Any]],
+) -> str:
+    """Build one deterministic unpartitioned benchmark dataset CTAS."""
+    if dataset not in DATASET_PREFIXES:
+        raise AcceptanceError(f"unknown benchmark dataset: {dataset}")
+    if not re.fullmatch(r"[a-z][a-z0-9_]*", schema):
+        raise AcceptanceError(f"invalid benchmark schema: {schema}")
+    assert_route_mapping(mapping)
+    routes = sorted(
+        mapping,
+        key=lambda row: (
+            parse_int(row["bucket_id"], "route bucket ID"),
+            parse_int(row["bucket_rank"], "route bucket rank"),
+        ),
+    )
+    route_values = ",\n                ".join(
+        f"('{row['route_id']}', {'TRUE' if bool(row['is_hot']) else 'FALSE'})"
+        for row in routes
+    )
+    if dataset == "balanced":
+        group_expression = "BIGINT '512'"
+        maximum_position = 511
+    else:
+        group_expression = """
+            CASE
+                WHEN is_hot AND day_number < 10 THEN BIGINT '8192'
+                WHEN is_hot OR day_number < 10 THEN BIGINT '512'
+                ELSE BIGINT '32'
+            END
+        """.strip()
+        maximum_position = 8_191
+    prefix = DATASET_PREFIXES[dataset]
+    return f"""
+        CREATE TABLE \"{CATALOG}\".\"{schema}\".\"{dataset}_u\" AS
+        WITH routes(route_id, is_hot) AS (
+            VALUES {route_values}
+        ), groups AS (
+            SELECT
+                day_number,
+                route_id,
+                is_hot,
+                {group_expression} AS group_size
+            FROM TABLE(sequence(start => 0, stop => 49)) AS days(day_number)
+            CROSS JOIN routes
+        ), generated AS (
+            SELECT
+                concat(
+                    '{prefix}-D',
+                    lpad(cast(day_number + 1 AS varchar), 2, '0'),
+                    '-', route_id, '-P',
+                    lpad(cast(position AS varchar), 4, '0')
+                ) AS package_id,
+                route_id,
+                concat(route_id, '-V1') AS route_version_id,
+                TIMESTAMP '2025-03-01 00:00:00 UTC'
+                    + day_number * INTERVAL '1' DAY
+                    + (position % 1440) * INTERVAL '1' MINUTE AS picked_up_at,
+                position % 16 AS cycle_position
+            FROM groups
+            CROSS JOIN TABLE(
+                sequence(start => 0, stop => {maximum_position})
+            ) AS positions(position)
+            WHERE position < group_size
+        ), promised AS (
+            SELECT
+                *,
+                picked_up_at + INTERVAL '48' HOUR AS promised_delivery_at
+            FROM generated
+        ), stated AS (
+            SELECT
+                *,
+                CASE
+                    WHEN cycle_position <= 1 THEN CAST(NULL AS BIGINT)
+                    WHEN cycle_position <= 11 THEN BIGINT '0'
+                    ELSE (cycle_position - 11) * BIGINT '30'
+                END AS delay_minutes
+            FROM promised
+        )
+        SELECT
+            package_id,
+            route_id,
+            route_version_id,
+            picked_up_at,
+            promised_delivery_at,
+            CASE
+                WHEN delay_minutes IS NULL
+                    THEN CAST(NULL AS TIMESTAMP(6) WITH TIME ZONE)
+                ELSE promised_delivery_at
+                    + delay_minutes * INTERVAL '1' MINUTE
+            END AS delivered_at,
+            CASE
+                WHEN delay_minutes IS NULL THEN CAST(NULL AS BOOLEAN)
+                ELSE delay_minutes = 0
+            END AS is_on_time,
+            delay_minutes
+        FROM stated
+    """
+
+
+def assert_benchmark_schema(rows: Sequence[Sequence[str]]) -> None:
+    """Require the exact eight-column Trino schema for one benchmark table."""
+    expected_header = ["Column", "Type", "Extra", "Comment"]
+    if not rows or list(rows[0]) != expected_header:
+        raise AcceptanceError(f"invalid benchmark schema header: {rows[:1]}")
+    actual = [(row[0], row[1]) for row in rows[1:] if len(row) == 4]
+    if actual != list(BENCHMARK_COLUMNS) or len(rows) != len(BENCHMARK_COLUMNS) + 1:
+        raise AcceptanceError(f"unexpected benchmark schema: {actual}")
+
+
+def assert_group_contract_rows(
+    rows: Sequence[Sequence[str]],
+    *,
+    dataset: str,
+    mapping: Sequence[Mapping[str, Any]],
+) -> None:
+    """Require every day/route group to match independent size/state expectations."""
+    expected_header = [
+        "pickup_day",
+        "route_id",
+        "package_count",
+        "completed_count",
+        "on_time_count",
+        "total_delay_minutes",
+    ]
+    if not rows or list(rows[0]) != expected_header:
+        raise AcceptanceError(f"invalid {dataset} group-count header: {rows[:1]}")
+    mapping_summary = assert_route_mapping(mapping)
+    hot_routes = set(mapping_summary["hot_routes"])
+    route_ids = {str(row["route_id"]) for row in mapping}
+    expected_keys = {
+        (PICKUP_START_DATE + timedelta(days=day_number), route_id)
+        for day_number in range(PICKUP_DAY_COUNT)
+        for route_id in route_ids
+    }
+    actual_keys: set[tuple[date, str]] = set()
+    for row in rows[1:]:
+        if len(row) != len(expected_header):
+            raise AcceptanceError(f"invalid {dataset} group-count row: {row}")
+        pickup_day = date.fromisoformat(row[0])
+        route_id = row[1]
+        key = (pickup_day, route_id)
+        if key in actual_keys:
+            raise AcceptanceError(f"duplicate {dataset} group: {key}")
+        actual_keys.add(key)
+        expected = expected_aggregate(
+            group_size(
+                dataset,
+                peak=pickup_day < PICKUP_START_DATE + timedelta(days=PEAK_DAY_COUNT),
+                hot=route_id in hot_routes,
+            )
+        )
+        actual = {
+            name: parse_int(value, f"{dataset}/{pickup_day}/{route_id} {name}")
+            for name, value in zip(expected, row[2:], strict=True)
+        }
+        if actual != expected:
+            raise AcceptanceError(
+                f"unexpected {dataset} group aggregate for {key}: "
+                f"{actual} != {expected}"
+            )
+    if actual_keys != expected_keys:
+        missing = sorted(expected_keys - actual_keys)
+        extra = sorted(actual_keys - expected_keys)
+        raise AcceptanceError(
+            f"{dataset} group coverage mismatch; missing={missing[:3]}, extra={extra[:3]}"
+        )
+
+
+def assert_dataset_contract_row(actual: Mapping[str, Any], dataset: str) -> None:
+    """Require exact dataset cardinality, aggregate and formula assertions."""
+    if dataset not in DATASET_PREFIXES:
+        raise AcceptanceError(f"unknown benchmark dataset: {dataset}")
+    expected = {
+        "row_count": 256_000,
+        "unique_packages": 256_000,
+        "route_count": 10,
+        "day_count": 50,
+        "completed_count": 224_000,
+        "on_time_count": 160_000,
+        "total_delay_minutes": 4_800_000,
+        "not_null_violations": 0,
+        "route_version_violations": 0,
+        "pickup_formula_violations": 0,
+        "sla_violations": 0,
+        "state_violations": 0,
+    }
+    try:
+        normalized = {
+            key: parse_int(actual[key], f"{dataset} {key}") for key in expected
+        }
+    except (KeyError, TypeError, ValueError) as error:
+        raise AcceptanceError(
+            f"invalid {dataset} dataset contract: {actual}"
+        ) from error
+    if normalized != expected or set(actual) != set(expected):
+        raise AcceptanceError(
+            f"unexpected {dataset} dataset contract: {normalized} != {expected}"
+        )
 
 
 def expected_aggregate(row_count: int) -> dict[str, int]:
@@ -626,10 +912,174 @@ class PartitioningFilePruningAcceptanceRun(AcceptanceRun):
             )
 
     def run_partitioning_file_pruning_workflow(self) -> None:
-        raise AcceptanceError(
-            "partitioning/file-pruning behavior is not implemented yet; "
-            "continue with PF-ENV-002 and PF-IMP-001"
+        self.execute_sql(
+            "generation/create_schema.log",
+            f'CREATE SCHEMA "{CATALOG}"."{self.benchmark_schema}"',
         )
+        mapping_rows = self.query_csv(
+            "generation/route_mapping.csv",
+            route_mapping_sql(),
+        )
+        mapping = parse_route_mapping_rows(mapping_rows)
+        self.write_json(
+            "generation/route_mapping_summary.json",
+            assert_route_mapping(mapping),
+        )
+
+        generation_summary: dict[str, Any] = {}
+        for dataset in DATASETS:
+            sql = build_dataset_sql(
+                dataset,
+                schema=self.benchmark_schema,
+                mapping=mapping,
+            )
+            self.write_text(f"generation/create_{dataset}_u.sql", normalize_sql(sql))
+            self.execute_sql(f"generation/create_{dataset}_u.log", sql)
+
+            schema_rows = self.query_csv(
+                f"generation/{dataset}_schema.csv",
+                f'DESCRIBE "{CATALOG}"."{self.benchmark_schema}"."{dataset}_u"',
+            )
+            assert_benchmark_schema(schema_rows)
+
+            group_rows = self.query_csv(
+                f"generation/{dataset}_group_counts.csv",
+                f"""
+                SELECT
+                    CAST(picked_up_at AS date) AS pickup_day,
+                    route_id,
+                    count(*) AS package_count,
+                    count_if(delivered_at IS NOT NULL) AS completed_count,
+                    count_if(is_on_time) AS on_time_count,
+                    coalesce(sum(delay_minutes), BIGINT '0') AS total_delay_minutes
+                FROM "{CATALOG}"."{self.benchmark_schema}"."{dataset}_u"
+                GROUP BY 1, 2
+                ORDER BY 1, 2
+                """,
+            )
+            assert_group_contract_rows(
+                group_rows,
+                dataset=dataset,
+                mapping=mapping,
+            )
+
+            contract_rows = self.query_csv(
+                f"generation/{dataset}_contract.csv",
+                self.dataset_contract_sql(dataset),
+            )
+            if len(contract_rows) != 2:
+                raise AcceptanceError(
+                    f"{dataset} contract returned {len(contract_rows) - 1} rows"
+                )
+            contract = dict(zip(contract_rows[0], contract_rows[1], strict=True))
+            assert_dataset_contract_row(contract, dataset)
+            generation_summary[dataset] = {
+                key: parse_int(value, f"{dataset} {key}")
+                for key, value in contract.items()
+            }
+
+        self.write_json(
+            "generation/generation_summary.json",
+            {
+                "route_mapping": assert_route_mapping(mapping),
+                "datasets": generation_summary,
+            },
+        )
+        self.ac_results["AC-022"] = "PASS"
+        raise AcceptanceError(
+            "partitioning/file-pruning behavior checks are incomplete: "
+            "continue with PF-IMP-002"
+        )
+
+    def execute_sql(self, relative_path: str, sql: str) -> None:
+        self.capture(
+            [
+                "docker",
+                "compose",
+                "exec",
+                "-T",
+                "trino",
+                "trino",
+                "--execute",
+                normalize_sql(sql),
+            ],
+            relative_path,
+        )
+
+    def dataset_contract_sql(self, dataset: str) -> str:
+        if dataset not in DATASET_PREFIXES:
+            raise AcceptanceError(f"unknown benchmark dataset: {dataset}")
+        prefix = DATASET_PREFIXES[dataset]
+        table = f'"{CATALOG}"."{self.benchmark_schema}"."{dataset}_u"'
+        return f"""
+            WITH decoded AS (
+                SELECT
+                    *,
+                    CAST(
+                        regexp_extract(package_id, '^{prefix}-D([0-9]{{2}})-', 1)
+                        AS BIGINT
+                    ) - 1 AS day_number,
+                    CAST(
+                        regexp_extract(package_id, '-P([0-9]+)$', 1)
+                        AS BIGINT
+                    ) AS position
+                FROM {table}
+            ), checked AS (
+                SELECT
+                    *,
+                    position % 16 AS cycle_position
+                FROM decoded
+            )
+            SELECT
+                count(*) AS row_count,
+                count(DISTINCT package_id) AS unique_packages,
+                count(DISTINCT route_id) AS route_count,
+                count(DISTINCT CAST(picked_up_at AS date)) AS day_count,
+                count_if(delivered_at IS NOT NULL) AS completed_count,
+                count_if(is_on_time) AS on_time_count,
+                coalesce(sum(delay_minutes), BIGINT '0') AS total_delay_minutes,
+                count_if(
+                    package_id IS NULL
+                    OR route_id IS NULL
+                    OR route_version_id IS NULL
+                    OR picked_up_at IS NULL
+                    OR promised_delivery_at IS NULL
+                ) AS not_null_violations,
+                count_if(
+                    route_version_id IS DISTINCT FROM concat(route_id, '-V1')
+                ) AS route_version_violations,
+                count_if(
+                    picked_up_at IS DISTINCT FROM
+                        TIMESTAMP '2025-03-01 00:00:00 UTC'
+                        + day_number * INTERVAL '1' DAY
+                        + (position % 1440) * INTERVAL '1' MINUTE
+                ) AS pickup_formula_violations,
+                count_if(
+                    promised_delivery_at IS DISTINCT FROM
+                        picked_up_at + INTERVAL '48' HOUR
+                ) AS sla_violations,
+                count_if(
+                    CASE
+                        WHEN cycle_position <= 1 THEN
+                            delivered_at IS NOT NULL
+                            OR is_on_time IS NOT NULL
+                            OR delay_minutes IS NOT NULL
+                        WHEN cycle_position <= 11 THEN
+                            delivered_at IS DISTINCT FROM promised_delivery_at
+                            OR is_on_time IS DISTINCT FROM TRUE
+                            OR delay_minutes IS DISTINCT FROM BIGINT '0'
+                        ELSE
+                            delivered_at IS DISTINCT FROM
+                                promised_delivery_at
+                                + (cycle_position - 11) * BIGINT '30'
+                                    * INTERVAL '1' MINUTE
+                            OR is_on_time IS DISTINCT FROM FALSE
+                            OR delay_minutes IS DISTINCT FROM
+                                (cycle_position - 11) * BIGINT '30'
+                    END
+                ) AS state_violations
+            FROM checked
+        """
 
     def cleanup_task_data(self) -> None:
         result = self.capture(

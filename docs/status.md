@@ -1454,3 +1454,56 @@ User reviews the checkpoint and, if accepted, stages and commits `scripts/run_pa
 
 ### Next action
 User reviews the checkpoint and, if accepted, stages and commits `scripts/run_partitioning_file_pruning_acceptance.py`, `scripts/tests/test_partitioning_file_pruning_acceptance.py`, and `docs/status.md`; no push or transition to PF-ENV-003 is authorized.
+
+## TASK_ID: PF-IMP-001
+
+- Source: `docs/bootstrap-partitioning-file-pruning.md` §5.3, “PF-IMP-001 — route mapping и deterministic generators”; `docs/spec.md` §11.2–§11.4 and AC-022
+- Status: REVIEW_READY
+- Updated: 2026-10-31T11:54:47+03:00
+- Baseline HEAD: 02f4d6634c49ada534c071b3b16c0c7b96e80111
+
+### Progress
+- Implemented: added the explicit-catalog bucket route query, exact route-mapping parser, deterministic balanced/skewed CTAS builders, schema/group/formula assertions, runner integration through the AC-022 checkpoint, and positive/mutation coverage. Fast checks pass; isolated run `pfimp001_gen` proved the exact mapping, both 256000-row datasets and all schema/group/state formulas, then stopped at the intentional PF-IMP-002 continuation gate and restored the initially stopped environment.
+- Remaining: none.
+
+### AC evidence
+| AC / ссылка на источник | Result | Проверка / evidence / причина |
+|---|---|---|
+| `docs/spec.md` AC-022; `docs/bootstrap-partitioning-file-pruning.md` §5.3 PF-IMP-001 | PASS | fast/standard/acceptance: `py_compile`, LSP diagnostics and 23 unit tests passed; actual-evidence group/state mutations were rejected. Isolated run `pfimp001_gen` selected exact bucket counts 3/3/2/2 with hot routes `BENCH-R0004`/`BENCH-R0001`, created exact eight-column balanced/skewed controls with 256000 unique rows each, 50 days, 10 routes, 500 exact groups and full aggregates 256000/224000/160000/4800000; all NULL/SLA/timestamp/state violations were zero. The expected continuation exit 1 retained `AC-022=PASS`, cleanup left a header-only schema listing and empty object prefix, stopped Compose, preserved the pre-existing volume, and produced a clean 34-file manifest. |
+
+### Issues
+#### PF-IMP-001/B01
+- State: RESOLVED
+- Category: ENVIRONMENT
+- Affects: `docs/spec.md` AC-022 acceptance evidence
+- Problem: Compose cannot render because the four required local training credential variables are absent from the current shell and no `.env` file exists.
+- Evidence: `docker compose --profile tools config --quiet` exited 1 naming only `RUSTFS_ACCESS_KEY`, `RUSTFS_SECRET_KEY`, `POLARIS_CLIENT_ID` and `POLARIS_CLIENT_SECRET`; all four project ports are free and no service started.
+- Unblock: export the documented `.env.example` non-production training values only for the preflight/acceptance command and rerun Compose config before starting the isolated workflow.
+- Resolution: with those task-local non-production values exported only for the command, Compose config exited 0; ports 8080/8181/9000/9001 are free and the fresh evidence path is absent.
+
+#### PF-IMP-001/B02
+- State: RESOLVED
+- Category: TEST
+- Affects: mandatory fast static generator boundary check
+- Problem: the first ad-hoc static harness imported the script as a package without adding `scripts/` to `PYTHONPATH`, so the helper assertions did not execute.
+- Evidence: Python exited 1 with `ModuleNotFoundError: No module named 'run_acceptance'`; the normal unittest invocation had already imported the same module and passed 23 tests.
+- Unblock: rerun the static boundary harness with `PYTHONPATH=scripts` and require all no-sorting/no-maintenance assertions to pass.
+- Resolution: the corrected harness exited 0 and confirmed both generated CTAS statements contain no `ORDER BY`, `sorted_by`, optimize, expiration or orphan-maintenance operation.
+
+#### PF-IMP-001/B03
+- State: RESOLVED
+- Category: TEST
+- Affects: mandatory FINAL_EVIDENCE_AND_DIFF_GATE for AC-022
+- Problem: the first post-run wrapper expected a nonexistent `final_compose_state` field in the inherited environment evidence and stopped before secret/manifest assertions.
+- Evidence: all business evidence preceding that access was valid; `cleanup/environment.json` actually records `final_project_containers`, initial/final volumes and `preexisting_volumes_preserved`.
+- Unblock: assert the inherited environment/secret evidence shapes and rerun the complete wrapper without repeating acceptance.
+- Resolution: the corrected wrapper passed all mapping, schema, 1000 group, aggregate/formula, cleanup, secret and 34-file manifest assertions; no project containers remain, all four ports are free and the three pre-existing named volumes remain.
+
+### Review
+- Verdict: OK
+- Calls: 1
+- Fix iterations: 0
+- Details: one fresh read-only reviewer inspected the complete three-file diff, AC-022 source contract, SQL generators/assertions/tests, saved `pfimp001_gen` mapping/group/schema/contract/cleanup/secret/manifest evidence and the PF-IMP-001 status section; it found no BLOCKER and returned `VERDICT OK`. DEFERRED: before the final-slice manifest gate is enabled, replace the pre-existing generic `generation/group_counts.csv` requirement with the two dataset-specific paths or create the aggregate path. IMPROVEMENT: future evidence can persist the standalone mutation/port/global-volume probes rather than relying on the main-agent command record; this does not affect AC-022.
+
+### Next action
+User reviews the checkpoint and, if accepted, stages and commits `scripts/run_partitioning_file_pruning_acceptance.py`, `scripts/tests/test_partitioning_file_pruning_acceptance.py`, and `docs/status.md`; no push or transition to PF-IMP-002 is authorized.

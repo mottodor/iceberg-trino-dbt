@@ -6,6 +6,7 @@ import copy
 import json
 import sys
 import unittest
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
@@ -66,8 +67,47 @@ class RouteMappingTests(unittest.TestCase):
         with self.assertRaisesRegex(target.AcceptanceError, "invalid benchmark route"):
             target.select_route_mapping([("route-1", 0)])
 
+    def test_route_mapping_sql_and_csv_parser_preserve_bucket_contract(self) -> None:
+        sql = target.route_mapping_sql()
+        self.assertIn("lakehouse.system.bucket", sql)
+        self.assertIn("PARTITION BY bucket_id ORDER BY route_id", sql)
+        self.assertIn("bucket_id IN (0, 1) AND bucket_rank = 1", sql)
+
+        mapping = target.select_route_mapping(self.candidates)
+        rows = [["route_id", "bucket_id", "bucket_rank", "is_hot"]]
+        rows.extend(
+            [
+                str(row["route_id"]),
+                str(row["bucket_id"]),
+                str(row["bucket_rank"]),
+                str(row["is_hot"]).lower(),
+            ]
+            for row in mapping
+        )
+        self.assertEqual(target.parse_route_mapping_rows(rows), mapping)
+
+        rows[-1][-1] = "yes"
+        with self.assertRaisesRegex(target.AcceptanceError, "invalid route hot flag"):
+            target.parse_route_mapping_rows(rows)
+
 
 class DatasetContractTests(unittest.TestCase):
+    def mapping(self) -> list[dict[str, Any]]:
+        return target.select_route_mapping(
+            [
+                ("BENCH-R0004", 0),
+                ("BENCH-R0005", 0),
+                ("BENCH-R0009", 0),
+                ("BENCH-R0001", 1),
+                ("BENCH-R0006", 1),
+                ("BENCH-R0014", 1),
+                ("BENCH-R0002", 2),
+                ("BENCH-R0008", 2),
+                ("BENCH-R0003", 3),
+                ("BENCH-R0007", 3),
+            ]
+        )
+
     def test_group_sizes_match_balanced_and_skewed_contract(self) -> None:
         for peak in (False, True):
             for hot in (False, True):
@@ -152,6 +192,102 @@ class DatasetContractTests(unittest.TestCase):
         mutated["dr"] = 8_192
         with self.assertRaisesRegex(target.AcceptanceError, "unexpected eligible records"):
             target.assert_eligible_records(mutated, "skewed", "hot_peak")
+
+    def test_dataset_sql_builders_encode_exact_deterministic_contract(self) -> None:
+        mapping = self.mapping()
+        balanced = target.build_dataset_sql(
+            "balanced", schema="unit_partition_benchmark", mapping=mapping
+        )
+        skewed = target.build_dataset_sql(
+            "skewed", schema="unit_partition_benchmark", mapping=mapping
+        )
+
+        self.assertIn('"balanced_u" AS', balanced)
+        self.assertIn("BIGINT '512' AS group_size", balanced)
+        self.assertIn("stop => 511", balanced)
+        self.assertIn("'BAL-D'", balanced)
+        self.assertIn('"skewed_u" AS', skewed)
+        self.assertIn("WHEN is_hot AND day_number < 10 THEN BIGINT '8192'", skewed)
+        self.assertIn("WHEN is_hot OR day_number < 10 THEN BIGINT '512'", skewed)
+        self.assertIn("ELSE BIGINT '32'", skewed)
+        self.assertIn("stop => 8191", skewed)
+        self.assertIn("WHERE position < group_size", skewed)
+        for sql in (balanced, skewed):
+            self.assertIn("position % 16 AS cycle_position", sql)
+            self.assertIn("INTERVAL '48' HOUR", sql)
+            self.assertNotIn("ORDER BY", sql)
+            self.assertNotIn("sorted_by", sql.lower())
+
+        with self.assertRaisesRegex(target.AcceptanceError, "invalid benchmark schema"):
+            target.build_dataset_sql("balanced", schema="bad.schema", mapping=mapping)
+        mutated = copy.deepcopy(mapping)
+        mutated[0]["route_id"] = "BENCH-R0004'); DROP TABLE x; --"
+        with self.assertRaisesRegex(target.AcceptanceError, "invalid route IDs"):
+            target.build_dataset_sql(
+                "balanced", schema="unit_partition_benchmark", mapping=mutated
+            )
+
+    def test_schema_group_and_dataset_assertions_fail_closed(self) -> None:
+        schema_rows = [["Column", "Type", "Extra", "Comment"]]
+        schema_rows.extend([[name, type_name, "", ""] for name, type_name in target.BENCHMARK_COLUMNS])
+        target.assert_benchmark_schema(schema_rows)
+        mutated_schema = copy.deepcopy(schema_rows)
+        mutated_schema[-1][1] = "integer"
+        with self.assertRaisesRegex(target.AcceptanceError, "unexpected benchmark schema"):
+            target.assert_benchmark_schema(mutated_schema)
+
+        mapping = self.mapping()
+        hot_routes = set(target.assert_route_mapping(mapping)["hot_routes"])
+        for dataset in target.DATASETS:
+            rows = [[
+                "pickup_day",
+                "route_id",
+                "package_count",
+                "completed_count",
+                "on_time_count",
+                "total_delay_minutes",
+            ]]
+            for day_number in range(target.PICKUP_DAY_COUNT):
+                pickup_day = target.PICKUP_START_DATE + timedelta(days=day_number)
+                for mapping_row in mapping:
+                    route_id = str(mapping_row["route_id"])
+                    expected = target.expected_aggregate(
+                        target.group_size(
+                            dataset,
+                            peak=day_number < target.PEAK_DAY_COUNT,
+                            hot=route_id in hot_routes,
+                        )
+                    )
+                    rows.append(
+                        [pickup_day.isoformat(), route_id]
+                        + [str(expected[key]) for key in expected]
+                    )
+            target.assert_group_contract_rows(rows, dataset=dataset, mapping=mapping)
+            mutated_rows = copy.deepcopy(rows)
+            mutated_rows[1][2] = str(int(mutated_rows[1][2]) - 1)
+            with self.assertRaisesRegex(target.AcceptanceError, "unexpected .* group aggregate"):
+                target.assert_group_contract_rows(
+                    mutated_rows, dataset=dataset, mapping=mapping
+                )
+
+        contract = {
+            "row_count": 256_000,
+            "unique_packages": 256_000,
+            "route_count": 10,
+            "day_count": 50,
+            "completed_count": 224_000,
+            "on_time_count": 160_000,
+            "total_delay_minutes": 4_800_000,
+            "not_null_violations": 0,
+            "route_version_violations": 0,
+            "pickup_formula_violations": 0,
+            "sla_violations": 0,
+            "state_violations": 0,
+        }
+        target.assert_dataset_contract_row(contract, "balanced")
+        contract["state_violations"] = 1
+        with self.assertRaisesRegex(target.AcceptanceError, "unexpected balanced"):
+            target.assert_dataset_contract_row(contract, "balanced")
 
 
 class PlanParserTests(unittest.TestCase):
