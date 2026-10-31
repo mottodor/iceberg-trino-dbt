@@ -1596,3 +1596,47 @@ User reviews the checkpoint and, if accepted, stages and commits `scripts/run_pa
 
 ### Next action
 User reviews the checkpoint and, if accepted, stages and commits `scripts/run_partitioning_file_pruning_acceptance.py`, `scripts/tests/test_partitioning_file_pruning_acceptance.py`, and `docs/status.md`; no push or transition to PF-IMP-004 is authorized.
+
+## TASK_ID: PF-IMP-004
+
+- Source: `docs/bootstrap-partitioning-file-pruning.md` §5.3, “PF-IMP-004 — skewed workload”; `docs/spec.md` §11.3, §11.5 and AC-025; runtime permissions boundary in the plan §7
+- Status: REVIEW_READY
+- Updated: 2026-10-31T22:13:11+03:00
+- Baseline HEAD: 651e070f69c2e1ea0e641f9f19b2f2a245781256
+
+### Progress
+- Implemented: added exact skewed predicates/queries, partition and file candidate reconciliation, nine-case scan comparison gates, runner integration through the AC-025 checkpoint, and positive/mutation coverage. After fixing the runtime-shaped CSV result-type defect, all 37 tests and LSP checks passed; isolated run `pfimp004_skewed_fix1` proved all 36 skewed query/layout cells, exact aggregates/eligible records, physical-input reductions, hot/cold and peak/off-peak density contrasts, co-bucket rows, and full-scan behavior, then reached the intentional PF-IMP-005 continuation gate. Evidence hashes, mutations, cleanup and environment restoration passed.
+- Remaining: none within PF-IMP-004; PF-IMP-005–006 remain out of scope.
+
+### AC evidence
+| AC / ссылка на источник | Result | Проверка / evidence / причина |
+|---|---|---|
+| `docs/spec.md` AC-025; `docs/bootstrap-partitioning-file-pruning.md` §5.3 PF-IMP-004 | PASS | acceptance: `pfimp004_skewed_fix1` ran 501.81 seconds and recorded `AC-025=PASS` before the intentional PF-IMP-005 stop. All nine exact aggregates matched §11.5; U/D/R/DR eligible rows included peak 256000/20480/256000/20480, off-peak 256000/1280/256000/1280, hot route 256000/256000/115200/115200, cold route 256000/256000/12800/12800 and combined DR 9216/576/1024/64. Matching layouts reduced physical input; denser cases read more than paired sparse cases; bucket candidates exceeded route results. Standard replay accepted all 36 raw bundles, rejected five actual-evidence mutations, verified 622 manifest hashes and 384 commands, clean secrets, empty schema/prefix, stopped services/free ports and the preserved project volume. Fast: compilation, CLI, static boundary, 37 tests, whitespace and active LSP diagnostics passed. |
+
+### Issues
+#### PF-IMP-004/B01
+- State: RESOLVED
+- Category: CODE
+- Affects: `docs/spec.md` AC-025 and mandatory EVIDENCE_GATE
+- Problem: the skewed co-bucket assertion compares parsed integer metadata with an unparsed CSV aggregate string, so the final comparison crashes after all runtime captures.
+- Evidence: `python3 scripts/run_partitioning_file_pruning_acceptance.py --run-id pfimp004_skewed` exited 1 after 508.65 seconds with `TypeError: '<=' not supported between instances of 'int' and 'str'` in `assert_skewed_comparison`; `acceptance_summary.json` records outcome FAIL and 384 commands.
+- Unblock: parse the aggregate field before comparison, add a runtime-shaped string-value regression test, rerun affected fast checks, then repeat acceptance under a fresh run ID.
+- Resolution: the comparison now parses `package_count` before the co-bucket assertion; the runtime-shaped string-value regression passed in the full 37-test suite, and fresh acceptance `pfimp004_skewed_fix1` completed the final comparison with `AC-025=PASS`. The standard wrapper replayed all evidence and mutation checks successfully.
+
+#### PF-IMP-004/B02
+- State: RESOLVED
+- Category: REVIEW
+- Affects: mandatory STATUS_RECORD and FRESH_READ_ONLY_REVIEW gates
+- Problem: after reviewer call 1 returned OK, `Progress/Remaining` still describes that completed review and final gates as pending; correcting Progress is outside the narrow post-review service-finalization exception.
+- Evidence: reviewer call 1 returned `VERDICT OK` with no findings, while the reviewed section still says `Remaining: independent fresh read-only review and final status/diff gates only`.
+- Unblock: correct `Progress/Remaining`, validate status/diff, then obtain one fresh targeted re-review of the corrected complete diff.
+- Resolution: `Progress/Remaining` now states no remaining PF-IMP-004 work; the unique-section assertion and `git diff --check` passed, and fresh reviewer call 2 confirmed the corrected complete diff with `VERDICT OK` and no findings.
+
+### Review
+- Verdict: OK
+- Calls: 2
+- Fix iterations: 1
+- Details: reviewer call 1 inspected the complete diff, source AC and saved runtime evidence and returned `VERDICT OK` with no findings. After the targeted stale-Remaining correction, reviewer call 2 re-read the complete diff and corrected status section, found no BLOCKER, DEFERRED or IMPROVEMENT, and returned `VERDICT OK`.
+
+### Next action
+User reviews the checkpoint and, if accepted, stages and commits `scripts/run_partitioning_file_pruning_acceptance.py`, `scripts/tests/test_partitioning_file_pruning_acceptance.py`, and `docs/status.md`; no push or transition to PF-IMP-005 is authorized.

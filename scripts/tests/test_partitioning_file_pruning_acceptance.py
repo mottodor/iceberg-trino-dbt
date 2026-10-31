@@ -638,6 +638,252 @@ class BalancedWorkloadTests(unittest.TestCase):
                 target.assert_balanced_comparison(cases)
 
 
+class SkewedWorkloadTests(unittest.TestCase):
+    schema = "unit_partition_benchmark"
+    hot_route = "BENCH-R0004"
+    cold_route = "BENCH-R0002"
+
+    def metadata(self, layout: str, case: str) -> tuple[list[list[str]], list[list[str]]]:
+        partitions = [["pickup_day", "route_bucket", "record_count", "file_count", "total_size"]]
+        files = [["file_path", "record_count", "file_size_in_bytes", "bounds_include_target"]]
+        days = [f"2025-03-{i:02d}" for i in range(1, 32)] + [
+            f"2025-04-{i:02d}" for i in range(1, 20)
+        ]
+        if layout not in {"d", "dr"}:
+            days = [""]
+        elif case in {"peak_day", "hot_peak", "cold_peak"}:
+            days = ["2025-03-05"]
+        elif case in {"off_peak_day", "hot_off_peak", "cold_off_peak"}:
+            days = ["2025-03-30"]
+        buckets = ["0", "1", "2", "3"] if layout in {"r", "dr"} else [""]
+        if layout in {"r", "dr"} and case in {"hot_route", "hot_peak", "hot_off_peak"}:
+            buckets = ["0"]
+        elif layout in {"r", "dr"} and case in {"cold_route", "cold_peak", "cold_off_peak"}:
+            buckets = ["2"]
+        for day in days:
+            for bucket in buckets:
+                if not day and not bucket:
+                    records = 256000
+                elif not bucket:
+                    records = 20480 if day <= "2025-03-10" else 1280
+                elif not day:
+                    records = 115200 if bucket in {"0", "1"} else 12800
+                elif bucket in {"0", "1"}:
+                    records = 9216 if day <= "2025-03-10" else 576
+                else:
+                    records = 1024 if day <= "2025-03-10" else 64
+                path = f"s3://iceberg-trino-dbt/warehouse/{self.schema}/skewed_{layout}-uuid/"
+                if day:
+                    path += f"picked_up_at_day={day}/"
+                if bucket:
+                    path += f"route_id_bucket={bucket}/"
+                path += f"file-{day or 'all'}-{bucket or 'all'}.parquet"
+                partitions.append([day, bucket, str(records), "1", str(records * 2)])
+                files.append([path, str(records), str(records * 2), "true"])
+        return partitions, files
+
+    def comparison(self) -> dict[str, Any]:
+        logical = {
+            "peak_day": (20480, 17920, 12800, 384000),
+            "off_peak_day": (1280, 1120, 800, 24000),
+            "hot_route": (102400, 89600, 64000, 1920000),
+            "cold_route": (6400, 5600, 4000, 120000),
+            "hot_peak": (8192, 7168, 5120, 153600),
+            "hot_off_peak": (512, 448, 320, 9600),
+            "cold_peak": (512, 448, 320, 9600),
+            "cold_off_peak": (32, 28, 20, 600),
+            "full_scan": (256000, 224000, 160000, 4800000),
+        }
+        eligible = {
+            "peak_day": (256000, 20480, 256000, 20480),
+            "off_peak_day": (256000, 1280, 256000, 1280),
+            "hot_route": (256000, 256000, 115200, 115200),
+            "cold_route": (256000, 256000, 12800, 12800),
+            "hot_peak": (256000, 20480, 115200, 9216),
+            "hot_off_peak": (256000, 1280, 115200, 576),
+            "cold_peak": (256000, 20480, 12800, 1024),
+            "cold_off_peak": (256000, 1280, 12800, 64),
+            "full_scan": (256000, 256000, 256000, 256000),
+        }
+        return {
+            case: {
+                layout: {
+                    "result": dict(
+                        zip(
+                            (
+                                "package_count",
+                                "completed_count",
+                                "on_time_count",
+                                "total_delay_minutes",
+                            ),
+                            map(str, logical[case]),
+                            strict=True,
+                        )
+                    ),
+                    "candidates": {"record_count": records},
+                    "io": {"estimate": {"outputRowCount": records}},
+                    "runtime": {
+                        "input_rows": records,
+                        "physical_input_bytes": records,
+                        "splits": 1,
+                    },
+                }
+                for layout, records in zip(
+                    ("u", "d", "r", "dr"), eligible[case], strict=True
+                )
+            }
+            for case in logical
+        }
+
+    def test_queries_use_exact_peak_off_peak_and_route_predicates(self) -> None:
+        date_cases = {
+            "peak_day",
+            "off_peak_day",
+            "hot_peak",
+            "hot_off_peak",
+            "cold_peak",
+            "cold_off_peak",
+        }
+        route_cases = {
+            "hot_route",
+            "cold_route",
+            "hot_peak",
+            "hot_off_peak",
+            "cold_peak",
+            "cold_off_peak",
+        }
+        for case in target.DATASET_CASES["skewed"]:
+            for layout in target.LAYOUTS:
+                sql = target.skewed_query_sql(
+                    self.schema, layout, case, self.hot_route, self.cold_route
+                )
+                self.assertIn(f'"skewed_{layout}"', sql)
+                self.assertNotIn("CAST(picked_up_at", sql)
+                self.assertEqual("picked_up_at >=" in sql, case in date_cases)
+                self.assertEqual("route_id =" in sql, case in route_cases)
+                self.assertEqual("2025-03-05" in sql, case in {"peak_day", "hot_peak", "cold_peak"})
+                self.assertEqual("2025-03-30" in sql, case in {"off_peak_day", "hot_off_peak", "cold_off_peak"})
+        with self.assertRaisesRegex(target.AcceptanceError, "unknown skewed"):
+            target.skewed_query_sql(
+                self.schema, "u", "other", self.hot_route, self.cold_route
+            )
+        with self.assertRaisesRegex(target.AcceptanceError, "invalid representative"):
+            target.skewed_query_sql(
+                self.schema, "u", "hot_route", "bad'route", self.cold_route
+            )
+
+    def test_all_thirty_six_candidate_selections_and_metadata_sql(self) -> None:
+        comparison = self.comparison()
+        for case in target.DATASET_CASES["skewed"]:
+            for layout in target.LAYOUTS:
+                partitions, files = self.metadata(layout, case)
+                summary = target.assert_skewed_candidates(
+                    partitions,
+                    files,
+                    schema=self.schema,
+                    layout=layout,
+                    case=case,
+                )
+                self.assertEqual(
+                    summary["record_count"],
+                    comparison[case][layout]["candidates"]["record_count"],
+                )
+                partition_sql, file_sql = target.skewed_candidate_sql(
+                    self.schema,
+                    layout,
+                    case,
+                    self.hot_route,
+                    0,
+                    self.cold_route,
+                    2,
+                )
+                date_filtered = case in {
+                    "peak_day",
+                    "off_peak_day",
+                    "hot_peak",
+                    "hot_off_peak",
+                    "cold_peak",
+                    "cold_off_peak",
+                }
+                route_filtered = case in {
+                    "hot_route",
+                    "cold_route",
+                    "hot_peak",
+                    "hot_off_peak",
+                    "cold_peak",
+                    "cold_off_peak",
+                }
+                self.assertEqual(
+                    "partition.picked_up_at_day =" in partition_sql,
+                    layout in {"d", "dr"} and date_filtered,
+                )
+                self.assertEqual(
+                    "partition.route_id_bucket =" in partition_sql,
+                    layout in {"r", "dr"} and route_filtered,
+                )
+                self.assertNotIn("bounds", file_sql.split("WHERE")[1])
+                self.assertEqual(summary["file_count"], len(files) - 1)
+        with self.assertRaisesRegex(target.AcceptanceError, "hot bucket 0"):
+            target.skewed_candidate_sql(
+                self.schema,
+                "r",
+                "hot_route",
+                self.hot_route,
+                1,
+                self.cold_route,
+                2,
+            )
+
+    def test_candidate_mutations_fail_closed(self) -> None:
+        partitions, files = self.metadata("dr", "hot_peak")
+        mutations = {
+            "wrong_partition_records": lambda p, f: p[1].__setitem__(2, "8192"),
+            "missing_partition": lambda p, f: p.pop(),
+            "duplicate_file": lambda p, f: f.append(f[1][:]),
+            "wrong_file_records": lambda p, f: f[1].__setitem__(1, "8192"),
+            "bounds_exclude": lambda p, f: f[1].__setitem__(3, "false"),
+            "foreign_file": lambda p, f: f[1].__setitem__(
+                0, f[1][0].replace(self.schema, "foreign")
+            ),
+        }
+        for name, mutate in mutations.items():
+            changed_partitions = copy.deepcopy(partitions)
+            changed_files = copy.deepcopy(files)
+            mutate(changed_partitions, changed_files)
+            with self.subTest(name=name), self.assertRaises(target.AcceptanceError):
+                target.assert_skewed_candidates(
+                    changed_partitions,
+                    changed_files,
+                    schema=self.schema,
+                    layout="dr",
+                    case="hot_peak",
+                )
+
+    def test_comparison_rejects_missing_evidence_and_false_skew_claims(self) -> None:
+        self.assertEqual(
+            target.assert_skewed_comparison(self.comparison())["query_layout_count"],
+            36,
+        )
+        mutations = {
+            "missing_case": lambda cases: cases.pop("full_scan"),
+            "missing_layout": lambda cases: cases["peak_day"].pop("r"),
+            "wrong_aggregate": lambda cases: cases["hot_peak"]["dr"]["result"].__setitem__("package_count", 8191),
+            "wrong_eligible": lambda cases: cases["cold_off_peak"]["dr"]["candidates"].__setitem__("record_count", 32),
+            "wrong_runtime": lambda cases: cases["hot_peak"]["dr"]["runtime"].__setitem__("input_rows", 8192),
+            "wrong_io": lambda cases: cases["hot_peak"]["dr"]["io"]["estimate"].__setitem__("outputRowCount", 8192),
+            "no_reduction": lambda cases: cases["hot_peak"]["dr"]["runtime"].__setitem__("physical_input_bytes", 256000),
+            "hidden_co_bucket": lambda cases: cases["hot_route"]["r"]["candidates"].__setitem__("record_count", 102400),
+            "no_dr_subset": lambda cases: cases["cold_off_peak"]["dr"]["candidates"].__setitem__("record_count", 1280),
+            "no_density_contrast": lambda cases: cases["peak_day"]["d"]["runtime"].__setitem__("physical_input_bytes", 1280),
+            "pruned_full_scan": lambda cases: cases["full_scan"]["dr"]["runtime"].__setitem__("input_rows", 200),
+        }
+        for name, mutate in mutations.items():
+            cases = self.comparison()
+            mutate(cases)
+            with self.subTest(name=name), self.assertRaises(target.AcceptanceError):
+                target.assert_skewed_comparison(cases)
+
+
 class PlanParserTests(unittest.TestCase):
     schema = "unit_partition_benchmark"
 

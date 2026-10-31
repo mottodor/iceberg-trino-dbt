@@ -1218,6 +1218,347 @@ def assert_balanced_comparison(cases: Mapping[str, Any]) -> dict[str, Any]:
     return {"case_count": 4, "query_layout_count": 16, "exact_results": True, "eligible_matrix": True, "physical_input_reductions": True, "full_scan_unpruned": True}
 
 
+def skewed_predicate(case: str, hot_route: str, cold_route: str) -> str:
+    """Return only approved raw-column predicates for the skewed workload."""
+    if case not in DATASET_CASES["skewed"]:
+        raise AcceptanceError(f"unknown skewed case: {case}")
+    for role, route_id in (("hot", hot_route), ("cold", cold_route)):
+        if not re.fullmatch(r"BENCH-R\d{4}", route_id):
+            raise AcceptanceError(f"invalid representative {role} route: {route_id}")
+    if hot_route == cold_route:
+        raise AcceptanceError("hot and cold representative routes must differ")
+
+    predicates = []
+    if case in {"peak_day", "hot_peak", "cold_peak"}:
+        predicates.append(
+            "picked_up_at >= TIMESTAMP '2025-03-05 00:00:00 UTC' "
+            "AND picked_up_at < TIMESTAMP '2025-03-06 00:00:00 UTC'"
+        )
+    elif case in {"off_peak_day", "hot_off_peak", "cold_off_peak"}:
+        predicates.append(
+            "picked_up_at >= TIMESTAMP '2025-03-30 00:00:00 UTC' "
+            "AND picked_up_at < TIMESTAMP '2025-03-31 00:00:00 UTC'"
+        )
+    if case in {"hot_route", "hot_peak", "hot_off_peak"}:
+        predicates.append(f"route_id = '{hot_route}'")
+    elif case in {"cold_route", "cold_peak", "cold_off_peak"}:
+        predicates.append(f"route_id = '{cold_route}'")
+    return " AND ".join(predicates)
+
+
+def skewed_query_sql(
+    schema: str, layout: str, case: str, hot_route: str, cold_route: str
+) -> str:
+    """Use the same four aggregate expressions for all skewed executions."""
+    table = qualified_benchmark_table(schema, "skewed", layout)
+    predicate = skewed_predicate(case, hot_route, cold_route)
+    return f"""
+        SELECT count(*) AS package_count,
+            count_if(delivered_at IS NOT NULL) AS completed_count,
+            count_if(is_on_time) AS on_time_count,
+            coalesce(sum(delay_minutes), BIGINT '0') AS total_delay_minutes
+        FROM {table}
+        {('WHERE ' + predicate) if predicate else ''}
+    """
+
+
+def skewed_candidate_sql(
+    schema: str,
+    layout: str,
+    case: str,
+    hot_route: str,
+    hot_bucket: int,
+    cold_route: str,
+    cold_bucket: int,
+) -> tuple[str, str]:
+    """Select skewed metadata by partition identity, never by file bounds."""
+    if hot_bucket != 0 or cold_bucket != 2:
+        raise AcceptanceError("skewed representatives must use hot bucket 0 and cold bucket 2")
+    table = qualified_benchmark_table(schema, "skewed", layout)
+    predicate = skewed_predicate(case, hot_route, cold_route)
+    day_value = None
+    if case in {"peak_day", "hot_peak", "cold_peak"}:
+        day_value = "2025-03-05"
+    elif case in {"off_peak_day", "hot_off_peak", "cold_off_peak"}:
+        day_value = "2025-03-30"
+    bucket_value = None
+    if case in {"hot_route", "hot_peak", "hot_off_peak"}:
+        bucket_value = hot_bucket
+    elif case in {"cold_route", "cold_peak", "cold_off_peak"}:
+        bucket_value = cold_bucket
+
+    day = "partition.picked_up_at_day" if layout in {"d", "dr"} else "''"
+    bucket = "partition.route_id_bucket" if layout in {"r", "dr"} else "''"
+    partition_filters = []
+    file_filters = ["content = 0"]
+    if day_value is not None and layout in {"d", "dr"}:
+        partition_filters.append(
+            f"partition.picked_up_at_day = DATE '{day_value}'"
+        )
+        file_filters.append(f"file_path LIKE '%/picked_up_at_day={day_value}/%'")
+    if bucket_value is not None and layout in {"r", "dr"}:
+        partition_filters.append(f"partition.route_id_bucket = {bucket_value}")
+        file_filters.append(
+            f"file_path LIKE '%/route_id_bucket={bucket_value}/%'"
+        )
+    partitions = f"""
+        SELECT cast({day} AS varchar) AS pickup_day,
+            cast({bucket} AS varchar) AS route_bucket,
+            record_count, file_count, total_size
+        FROM {table[:-1]}$partitions"
+        {('WHERE ' + ' AND '.join(partition_filters)) if partition_filters else ''}
+    """
+
+    bounds = []
+    if day_value is not None:
+        next_day = (date.fromisoformat(day_value) + timedelta(days=1)).isoformat()
+        bounds.append(
+            f'lower_bounds."4" < TIMESTAMP \'{next_day} 00:00:00 UTC\' '
+            f'AND upper_bounds."4" >= TIMESTAMP \'{day_value} 00:00:00 UTC\''
+        )
+    route_id = None
+    if bucket_value == hot_bucket:
+        route_id = hot_route
+    elif bucket_value == cold_bucket:
+        route_id = cold_route
+    if route_id is not None:
+        bounds.append(
+            f'lower_bounds."2" <= \'{route_id}\' '
+            f'AND upper_bounds."2" >= \'{route_id}\''
+        )
+    files = f"""
+        SELECT file_path, record_count, file_size_in_bytes,
+            {' AND '.join(bounds) if bounds else 'TRUE'} AS bounds_include_target
+        FROM {table[:-1]}$files"
+        WHERE {' AND '.join(file_filters)}
+        ORDER BY file_path
+    """
+    return partitions, files
+
+
+def skewed_expected_tuples(layout: str, case: str) -> dict[tuple[str, str], int]:
+    """Independently enumerate the approved skewed partition universe."""
+    if layout not in LAYOUTS or case not in DATASET_CASES["skewed"]:
+        raise AcceptanceError(f"unknown skewed selection: {case}/{layout}")
+    days = [""]
+    if layout in {"d", "dr"}:
+        days = [
+            (PICKUP_START_DATE + timedelta(days=i)).isoformat()
+            for i in range(PICKUP_DAY_COUNT)
+        ]
+        if case in {"peak_day", "hot_peak", "cold_peak"}:
+            days = ["2025-03-05"]
+        elif case in {"off_peak_day", "hot_off_peak", "cold_off_peak"}:
+            days = ["2025-03-30"]
+    buckets = [""]
+    if layout in {"r", "dr"}:
+        buckets = ["0", "1", "2", "3"]
+        if case in {"hot_route", "hot_peak", "hot_off_peak"}:
+            buckets = ["0"]
+        elif case in {"cold_route", "cold_peak", "cold_off_peak"}:
+            buckets = ["2"]
+
+    expected = {}
+    for day in days:
+        for bucket in buckets:
+            if not day and not bucket:
+                records = 256_000
+            elif not bucket:
+                records = 20_480 if day <= "2025-03-10" else 1_280
+            elif not day:
+                records = 115_200 if bucket in {"0", "1"} else 12_800
+            elif bucket in {"0", "1"}:
+                records = 9_216 if day <= "2025-03-10" else 576
+            else:
+                records = 1_024 if day <= "2025-03-10" else 64
+            expected[(day, bucket)] = records
+    return expected
+
+
+def skewed_file_tuple(path: str, *, schema: str, layout: str) -> tuple[str, str]:
+    """Bind a pinned skewed writer path to its complete partition identity."""
+    anchor = f"/warehouse/{schema}/skewed_{layout}-"
+    if anchor not in path:
+        raise AcceptanceError(f"foreign skewed data file: {path}")
+    days = re.findall(r"/picked_up_at_day=([^/]+)/", path)
+    buckets = re.findall(r"/route_id_bucket=([^/]+)/", path)
+    if len(days) != (1 if layout in {"d", "dr"} else 0) or len(buckets) != (
+        1 if layout in {"r", "dr"} else 0
+    ):
+        raise AcceptanceError(f"invalid skewed file partition identity: {path}")
+    return (days[0] if days else "", buckets[0] if buckets else "")
+
+
+def assert_skewed_candidates(
+    partition_rows: Sequence[Sequence[str]],
+    file_rows: Sequence[Sequence[str]],
+    *,
+    schema: str,
+    layout: str,
+    case: str,
+) -> dict[str, int]:
+    """Require exact skewed tuples and reconcile candidate file metadata."""
+    partitions = parse_csv_dict_rows(
+        partition_rows,
+        expected_header=[
+            "pickup_day",
+            "route_bucket",
+            "record_count",
+            "file_count",
+            "total_size",
+        ],
+        label="skewed candidate partitions",
+    )
+    expected = skewed_expected_tuples(layout, case)
+    by_tuple = {}
+    for row in partitions:
+        key = (row["pickup_day"], row["route_bucket"])
+        if key not in expected or key in by_tuple:
+            raise AcceptanceError(f"invalid or duplicate skewed candidate tuple: {key}")
+        actual = tuple(
+            parse_int(row[name], name)
+            for name in ("record_count", "file_count", "total_size")
+        )
+        if actual[0] != expected[key] or min(actual[1:]) <= 0:
+            raise AcceptanceError(f"invalid skewed candidate counts: {key}: {actual}")
+        by_tuple[key] = actual
+    if set(by_tuple) != set(expected):
+        raise AcceptanceError("skewed candidate tuple coverage mismatch")
+
+    files = parse_csv_dict_rows(
+        file_rows,
+        expected_header=[
+            "file_path",
+            "record_count",
+            "file_size_in_bytes",
+            "bounds_include_target",
+        ],
+        label="skewed candidate files",
+    )
+    seen = set()
+    totals = {key: [0, 0, 0] for key in expected}
+    for row in files:
+        path = row["file_path"]
+        key = skewed_file_tuple(path, schema=schema, layout=layout)
+        if path in seen or key not in totals:
+            raise AcceptanceError(f"duplicate or ineligible skewed candidate file: {path}")
+        seen.add(path)
+        records = parse_int(row["record_count"], "skewed candidate file records")
+        size = parse_int(row["file_size_in_bytes"], "skewed candidate file size")
+        if min(records, size) <= 0 or row["bounds_include_target"].lower() != "true":
+            raise AcceptanceError(
+                "skewed candidate file bounds/counts violate pruning isolation"
+            )
+        totals[key][0] += records
+        totals[key][1] += 1
+        totals[key][2] += size
+    if any(tuple(totals[key]) != by_tuple[key] for key in expected):
+        raise AcceptanceError("skewed candidate file/partition reconciliation mismatch")
+    return {
+        "tuple_count": len(expected),
+        "file_count": len(files),
+        "record_count": sum(value[0] for value in by_tuple.values()),
+        "total_size_in_bytes": sum(value[2] for value in by_tuple.values()),
+    }
+
+
+def assert_skewed_comparison(cases: Mapping[str, Any]) -> dict[str, Any]:
+    """Gate AC-025 on all 36 exact skewed results and scan relationships."""
+    if set(cases) != set(DATASET_CASES["skewed"]):
+        raise AcceptanceError("skewed case coverage mismatch")
+    reductions = {
+        "peak_day": ("d", "dr"),
+        "off_peak_day": ("d", "dr"),
+        "hot_route": ("r", "dr"),
+        "cold_route": ("r", "dr"),
+        "hot_peak": ("d", "r", "dr"),
+        "hot_off_peak": ("d", "r", "dr"),
+        "cold_peak": ("d", "r", "dr"),
+        "cold_off_peak": ("d", "r", "dr"),
+    }
+    for case, layouts in cases.items():
+        if set(layouts) != set(LAYOUTS):
+            raise AcceptanceError(f"skewed layout coverage mismatch: {case}")
+        assert_eligible_records(
+            {
+                layout: value["candidates"]["record_count"]
+                for layout, value in layouts.items()
+            },
+            "skewed",
+            case,
+        )
+        for layout, value in layouts.items():
+            assert_case_aggregate(value["result"], "skewed", case)
+            records = value["candidates"]["record_count"]
+            runtime = value["runtime"]
+            if (
+                runtime["input_rows"] != records
+                or runtime["physical_input_bytes"] <= 0
+                or runtime["splits"] <= 0
+            ):
+                raise AcceptanceError(f"invalid skewed runtime scan: {case}/{layout}")
+            if value["io"]["estimate"]["outputRowCount"] != records:
+                raise AcceptanceError(f"skewed IO estimate mismatch: {case}/{layout}")
+        for layout in reductions.get(case, ()):
+            if (
+                layouts[layout]["runtime"]["physical_input_bytes"]
+                >= layouts["u"]["runtime"]["physical_input_bytes"]
+            ):
+                raise AcceptanceError(f"skewed physical input not reduced: {case}/{layout}")
+
+    for case in ("hot_route", "cold_route", "hot_peak", "hot_off_peak", "cold_peak", "cold_off_peak"):
+        for layout in ("r", "dr"):
+            if (
+                cases[case][layout]["candidates"]["record_count"]
+                <= parse_int(
+                    cases[case][layout]["result"]["package_count"],
+                    f"{case}/{layout} package_count",
+                )
+            ):
+                raise AcceptanceError(f"bucket pruning hid co-bucket routes: {case}/{layout}")
+
+    for case in ("hot_peak", "hot_off_peak", "cold_peak", "cold_off_peak"):
+        combined = cases[case]
+        if not all(
+            combined["dr"]["candidates"]["record_count"]
+            < combined[layout]["candidates"]["record_count"]
+            for layout in ("d", "r")
+        ):
+            raise AcceptanceError(f"skewed DR is not a strict subset: {case}")
+
+    density_pairs = (
+        ("peak_day", "off_peak_day", "d"),
+        ("hot_route", "cold_route", "r"),
+        ("hot_peak", "hot_off_peak", "dr"),
+        ("cold_peak", "cold_off_peak", "dr"),
+        ("hot_peak", "cold_peak", "dr"),
+        ("hot_off_peak", "cold_off_peak", "dr"),
+    )
+    for dense_case, sparse_case, layout in density_pairs:
+        dense = cases[dense_case][layout]
+        sparse = cases[sparse_case][layout]
+        if not (
+            dense["candidates"]["record_count"]
+            > sparse["candidates"]["record_count"]
+            and dense["runtime"]["physical_input_bytes"]
+            > sparse["runtime"]["physical_input_bytes"]
+        ):
+            raise AcceptanceError(
+                f"skew density relationship missing: {dense_case}/{sparse_case}/{layout}"
+            )
+
+    return {
+        "case_count": 9,
+        "query_layout_count": 36,
+        "exact_results": True,
+        "eligible_matrix": True,
+        "physical_input_reductions": True,
+        "density_contrasts": True,
+        "co_bucket_rows_visible": True,
+        "full_scan_unpruned": True,
+    }
+
+
 def parse_byte_size(value: str) -> int:
     """Parse Trino's decimal B/kB/MB/GB sizes into rounded bytes."""
     match = SIZE_PATTERN.fullmatch(value.strip())
@@ -1747,9 +2088,22 @@ class PartitioningFilePruningAcceptanceRun(AcceptanceRun):
         self.ac_results["AC-023"] = "PASS"
         self.run_balanced_workload(representative_route, representative_bucket)
         self.ac_results["AC-024"] = "PASS"
+        hot_route = str(mapping_summary["representative_hot_route"])
+        hot_bucket = next(
+            parse_int(row["bucket_id"], "representative hot route bucket")
+            for row in mapping
+            if row["route_id"] == hot_route
+        )
+        self.run_skewed_workload(
+            hot_route,
+            hot_bucket,
+            representative_route,
+            representative_bucket,
+        )
+        self.ac_results["AC-025"] = "PASS"
         raise AcceptanceError(
-            "partitioning/file-pruning workload checks are incomplete: "
-            "continue with PF-IMP-004"
+            "partitioning/file-pruning causal evidence checks are incomplete: "
+            "continue with PF-IMP-005"
         )
 
     def run_balanced_workload(self, route_id: str, route_bucket: int) -> None:
@@ -1794,6 +2148,127 @@ class PartitioningFilePruningAcceptanceRun(AcceptanceRun):
                 cases[case][layout] = summary
         comparison = assert_balanced_comparison(cases)
         self.write_json("workload/balanced/comparison.json", {**comparison, "cases": cases})
+
+    def run_skewed_workload(
+        self,
+        hot_route: str,
+        hot_bucket: int,
+        cold_route: str,
+        cold_bucket: int,
+    ) -> None:
+        cases: dict[str, Any] = {}
+        date_cases = {
+            "peak_day",
+            "off_peak_day",
+            "hot_peak",
+            "hot_off_peak",
+            "cold_peak",
+            "cold_off_peak",
+        }
+        route_cases = {
+            "hot_route",
+            "cold_route",
+            "hot_peak",
+            "hot_off_peak",
+            "cold_peak",
+            "cold_off_peak",
+        }
+        for case in DATASET_CASES["skewed"]:
+            cases[case] = {}
+            constraints = set()
+            if case in date_cases:
+                constraints.add("picked_up_at")
+            if case in route_cases:
+                constraints.add("route_id")
+            for layout in LAYOUTS:
+                base = f"workload/skewed/{case}/{layout}"
+                sql = normalize_sql(
+                    skewed_query_sql(
+                        self.benchmark_schema,
+                        layout,
+                        case,
+                        hot_route,
+                        cold_route,
+                    )
+                )
+                self.write_text(f"{base}/query.sql", sql)
+                rows = self.query_csv(f"{base}/result.csv", sql)
+                result = parse_csv_dict_rows(
+                    rows,
+                    expected_header=list(expected_case_aggregate("skewed", case)),
+                    label="skewed result",
+                )
+                if len(result) != 1:
+                    raise AcceptanceError(
+                        "skewed query must return exactly one aggregate row"
+                    )
+                assert_case_aggregate(result[0], "skewed", case)
+                partition_sql, file_sql = skewed_candidate_sql(
+                    self.benchmark_schema,
+                    layout,
+                    case,
+                    hot_route,
+                    hot_bucket,
+                    cold_route,
+                    cold_bucket,
+                )
+                partition_rows = self.query_csv(
+                    f"{base}/partitions.csv", partition_sql
+                )
+                file_rows = self.query_csv(f"{base}/files.csv", file_sql)
+                candidates = assert_skewed_candidates(
+                    partition_rows,
+                    file_rows,
+                    schema=self.benchmark_schema,
+                    layout=layout,
+                    case=case,
+                )
+                distributed_raw = self.capture_plan(
+                    f"{base}/explain.json",
+                    f"EXPLAIN (TYPE DISTRIBUTED, FORMAT JSON) {sql}",
+                )
+                io_raw = self.capture_plan(
+                    f"{base}/explain_io.json",
+                    f"EXPLAIN (TYPE IO, FORMAT JSON) {sql}",
+                )
+                runtime_raw = self.capture_plan(
+                    f"{base}/explain_analyze.txt", f"EXPLAIN ANALYZE {sql}"
+                )
+                distributed = parse_distributed_plan(
+                    distributed_raw, schema=self.benchmark_schema
+                )
+                io = parse_io_plan(
+                    io_raw,
+                    schema=self.benchmark_schema,
+                    expected_constraints=constraints,
+                )
+                runtime = parse_explain_analyze(
+                    runtime_raw, schema=self.benchmark_schema
+                )
+                table_name = f"skewed_{layout}"
+                anchor = f"{CATALOG}:{self.benchmark_schema}.{table_name}$data@"
+                if (
+                    not distributed["table_anchor"].startswith(anchor)
+                    or io["table"]["schemaTable"]["table"] != table_name
+                    or f"[table = {anchor}" not in runtime["scan_anchor"]
+                    or set(io["constraint_columns"]) != constraints
+                ):
+                    raise AcceptanceError(
+                        f"wrong skewed scan identity/constraints: {case}/{layout}"
+                    )
+                summary = {
+                    "result": result[0],
+                    "candidates": candidates,
+                    "distributed": distributed,
+                    "io": io,
+                    "runtime": runtime,
+                }
+                self.write_json(f"{base}/summary.json", summary)
+                cases[case][layout] = summary
+        comparison = assert_skewed_comparison(cases)
+        self.write_json(
+            "workload/skewed/comparison.json", {**comparison, "cases": cases}
+        )
 
     def capture_plan(self, path: str, sql: str) -> str:
         is_json = path.endswith(".json")
