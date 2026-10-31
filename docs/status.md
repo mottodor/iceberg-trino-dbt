@@ -1399,3 +1399,58 @@ User reviews the checkpoint and, if accepted, stages and commits `docs/status.md
 
 ### Next action
 User reviews the checkpoint and, if accepted, stages and commits `scripts/run_partitioning_file_pruning_acceptance.py` and `docs/status.md`; no push or transition to PF-ENV-002 is authorized.
+
+## TASK_ID: PF-ENV-002
+
+- Source: `docs/bootstrap-partitioning-file-pruning.md` §5.2, “PF-ENV-002 — pure helper/parser tests”
+- Status: REVIEW_READY
+- Updated: 2026-10-31T01:33:42+03:00
+- Baseline HEAD: bfa80234ec25d9f9288d7d2a2f3479c52a3c60a6
+
+### Progress
+- Implemented: added the pure route/group/aggregate/eligible-matrix, fail-closed distributed/IO/runtime parsers, bounds and 52-case final-manifest helpers plus a 20-test stdlib positive/mutation suite; runtime parsing now requires one total scan and rejects foreign-scan stats; replayed all 12 saved pinned-stack captures.
+- Remaining: none.
+
+### AC evidence
+| AC / ссылка на источник | Result | Проверка / evidence / причина |
+|---|---|---|
+| `docs/bootstrap-partitioning-file-pruning.md` §5.2 PF-ENV-002, stdlib pure helper/parser test module | PASS | fast after targeted fix: `py_compile` passed and `python3 -m unittest -v scripts.tests.test_partitioning_file_pruning_acceptance` passed all 20 tests. |
+| `docs/bootstrap-partitioning-file-pruning.md` §5.2 PF-ENV-002, route/group/aggregate/eligible-matrix and bounds decisions | PASS | fast: exact 3/3/2/2 route roles, balanced/skewed group sizes, all aggregate/matrix rows, bounds decisions and wrong-bucket/count/bounds mutations passed; LSP diagnostics reported zero findings. |
+| `docs/bootstrap-partitioning-file-pruning.md` §5.2 PF-ENV-002, byte parser, plan scan cardinality, manifest completeness and false-cleanup mutations | PASS | fast/standard after targeted fix: parser rejects an owned scan without stats followed by a foreign scan with stats, as well as unknown units, duplicate scans/inputs, missing constraints/physical input, missing cases, invalid/duplicate manifest entries and false cleanup. The 12 saved Trino-484 captures still parse and match IO/runtime eligible rows. |
+
+### Issues
+#### PF-ENV-002/B01
+- State: RESOLVED
+- Category: TEST
+- Affects: `docs/bootstrap-partitioning-file-pruning.md` §5.2 PF-ENV-002 required wrong-bucket mutation and mandatory EVIDENCE_GATE
+- Problem: the wrong-bucket test mutates a row that is already in bucket 3, so no bucket-count defect is introduced and the expected rejection does not occur.
+- Evidence: the 19-test unittest run exited 1 only at `test_rejects_wrong_bucket_count_mutation` with `AcceptanceError not raised`; inspection shows `mutated[-2]["bucket_id"] = 3` preserves that row's original bucket.
+- Unblock: mutate an actual bucket-2 row into bucket 3, rerun the complete suite, and confirm the exact bucket-count failure is detected.
+- Resolution: the mutation now changes selected bucket-2 row index 6 to bucket 3; the complete final 20-test suite exited 0 and the exact bucket-count rejection passed.
+
+#### PF-ENV-002/B02
+- State: RESOLVED
+- Category: TEST
+- Affects: standard replay of pinned Trino-484 parser evidence and mandatory EVIDENCE_GATE
+- Problem: the first saved-probe replay passed `date` directly to the helper whose approved balanced case name is `day`, so the wrapper stopped before completing all 12 parser assertions.
+- Evidence: the replay exited 1 with `AcceptanceError: unknown eligible-record case: balanced/date`; route mapping and bounds checks had passed, and the parser had already read the first saved capture successfully.
+- Unblock: map saved probe names `date/combined` to helper names `day/day_route`, rerun the unchanged 12-capture replay, and require IO/runtime eligible rows to match.
+- Resolution: the corrected replay maps `date` to `day` and `combined` to `day_route`; it exited 0 after parsing 12 distributed/IO/runtime captures, with exact eligible-row matches plus route-mapping and bounds PASS.
+
+#### PF-ENV-002/B03
+- State: RESOLVED
+- Category: CODE
+- Affects: runtime plan parser fail-closed invariant, `docs/bootstrap-partitioning-file-pruning.md` §4.5/§5.2 parser contract, and mandatory FRESH_READ_ONLY_REVIEW gate
+- Problem: `parse_explain_analyze` searches from the owned scan to the end of the plan, so an owned scan without stats can incorrectly consume physical-input statistics from a later foreign scan.
+- Evidence: reviewer call 1 returned `VERDICT BLOCK` with a reproducible owned-scan-without-stats followed by foreign-scan-with-stats path; the current duplicate-plan mutation only proves duplicate owned-scan cardinality.
+- Unblock: bound stats parsing to the owned scan fragment or reject subsequent scan ambiguity, add the exact foreign-scan mutation, rerun the complete suite and 12-capture replay, then obtain fresh re-review.
+- Resolution: runtime parsing now requires exactly one total `ScanProject`/`ScanFilterProject`; a new mutation with one owned scan lacking stats followed by a foreign scan with stats is rejected. All 20 tests, LSP diagnostics, whitespace checks and the 12-capture replay passed.
+
+### Review
+- Verdict: OK
+- Calls: 2
+- Fix iterations: 1
+- Details: reviewer call 1 returned `VERDICT BLOCK` only for PF-ENV-002/B03. After the targeted parser/mutation fix, reviewer call 2 re-read the complete tracked/untracked diff, source contracts, saved captures and status section; it confirmed B03 resolution, found no BLOCKER, DEFERRED or IMPROVEMENT, and returned `VERDICT OK`.
+
+### Next action
+User reviews the checkpoint and, if accepted, stages and commits `scripts/run_partitioning_file_pruning_acceptance.py`, `scripts/tests/test_partitioning_file_pruning_acceptance.py`, and `docs/status.md`; no push or transition to PF-ENV-003 is authorized.
