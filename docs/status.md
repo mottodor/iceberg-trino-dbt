@@ -1640,3 +1640,65 @@ User reviews the checkpoint and, if accepted, stages and commits `scripts/run_pa
 
 ### Next action
 User reviews the checkpoint and, if accepted, stages and commits `scripts/run_partitioning_file_pruning_acceptance.py`, `scripts/tests/test_partitioning_file_pruning_acceptance.py`, and `docs/status.md`; no push or transition to PF-IMP-005 is authorized.
+
+## TASK_ID: PF-IMP-005
+
+- Source: `docs/bootstrap-partitioning-file-pruning.md` §5.3, “PF-IMP-005 — causal evidence matrix”; `docs/spec.md` §11.6 and AC-026
+- Status: REVIEW_READY
+- Updated: 2026-10-31T22:55:49+03:00
+- Baseline HEAD: f8b8da17269b590b9ffd33e897b601c4da08a0d1
+
+### Progress
+- Implemented: added the 52-cell raw causal-evidence gate, canonical SQL/exact IO-domain checks, plan/snapshot/summary consistency, layout-inventory binding, full-scan controls, ambiguous-stat rejection and AC-026 checkpoint. Fresh run `pfimp005_causal` confirmed AC-026 before the intentional PF-IMP-006 stop (515.681 seconds); final raw replay/hash/cleanup checks passed. After review B04, reproduced the accepted NONE mutation, required explicit `constraint.none is False` and added regression coverage for true/null/zero/string/missing values without changing summaries. Final 43 tests passed in 1.438 seconds, active LSP and compilation/whitespace passed; post-fix 52-cell replay, eight actual NONE mutations, 623 unchanged hashes and full environment/boundary checks passed in 0.519 seconds. Initial stopped state and pre-existing volume are preserved.
+- Remaining: none within PF-IMP-005; PF-IMP-006 catalog/object evidence and overall slice finalization remain out of scope.
+
+### AC evidence
+| AC / ссылка на источник | Result | Проверка / evidence / причина |
+|---|---|---|
+| `docs/spec.md` AC-026; `docs/bootstrap-partitioning-file-pruning.md` §5.3 PF-IMP-005 | PASS | acceptance: `python3 scripts/run_partitioning_file_pruning_acceptance.py --run-id pfimp005_causal` (command-local training env) exited 1 in 515.681 seconds at the expected PF-IMP-006 continuation gate, with AC-022–AC-026 PASS and AC-021/027 NOT_RUN; this is not overall slice PASS. `workload/causal_matrix.json` revalidates all 13×4 SQL/result/partition/file/distributed/IO/analyze/summary bundles. Full scans retain 256000 input records and all 1/50/4/200 tuples/files per dataset, zero filtering, no constraints and `pruning=false`; physical bytes are not equated to file sizes or wall-clock thresholds. Standard final replay matched the saved matrix, rejected five read-only actual-evidence mutations (SQL, aggregate, missing files, missing/ambiguous stats), verified 623 size/SHA-256 entries and 384 commands (only expected initialization retry [1,0] non-zero), clean secrets, absent schema/prefix, stopped project/free ports and preserved volume. Post-fix final-state replay (0.519 seconds) revalidated all 52 bundles with explicit non-NONE domains, matched the unchanged saved matrix, rejected the reviewer mutation in all eight actual full scans and rechecked 623 hashes, commands, cleanup/environment and immutable boundary. No SQL/data/runtime/summary-format changed in the fix, so the saved pinned-stack runtime remains applicable without another costly acceptance. Fast: compilation, CLI, final 43 positive/mutation tests, active LSP and whitespace pass. |
+
+### Issues
+#### PF-IMP-005/B01
+- State: RESOLVED
+- Category: CODE
+- Affects: mandatory fast/LSP gate
+- Problem: initial snapshot-match expression does not narrow optional regex matches for the type checker.
+- Evidence: post-edit active LSP reports two `Object of type None is not subscriptable` errors in the causal snapshot comparison.
+- Unblock: explicitly narrow both matches and rerun active diagnostics plus tests.
+- Resolution: explicit planned/runtime regex matches are narrowed before indexing; active LSP reports zero diagnostics for both changed Python paths and all 42 tests pass.
+
+#### PF-IMP-005/B02
+- State: RESOLVED
+- Category: TEST
+- Affects: mandatory FINAL_EVIDENCE_AND_DIFF_GATE
+- Problem: post-run wrapper requires `runtime/object_paths.json`, which belongs to PF-IMP-006, instead of excluding all three future catalog/object paths at this checkpoint.
+- Evidence: wrapper exited 1 after successful matrix replay and 623 manifest hashes; required-path difference is exactly `runtime/catalog_tables.csv`, `runtime/object_paths.json`, `runtime/polaris_catalog.json`. Runtime summary retains the intended PF-IMP-006 continuation failure.
+- Unblock: scope the wrapper to PF-IMP-005 evidence, retaining all 52 raw bundles, cleanup, command/secret/hash/environment checks; rerun without repeating unchanged acceptance.
+- Resolution: corrected final wrapper exited 0, requiring exactly the three future paths absent while validating all 52 bundles, five actual-evidence mutations, all 623 hashes, cleanup and environment. Acceptance was not repeated; evidence/code were unchanged.
+
+#### PF-IMP-005/B03
+- State: RESOLVED
+- Category: TEST
+- Affects: mandatory FINAL_EVIDENCE_AND_DIFF_GATE
+- Problem: corrected post-run wrapper treats the journal's rendered command string as an argv list while identifying the permitted readiness retry.
+- Evidence: wrapper exited 1 at the retry assertion; `commands.jsonl` stores `command` as a string ending in `--execute SELECT 1 AS ready`, with readiness exits [1,0] and all other commands at exit 0.
+- Unblock: match the actual rendered command suffix, verify the saved initialization diagnostic and complete the same post-run checks.
+- Resolution: corrected final wrapper matched the rendered suffix, required readiness exits [1,0], asserted the first saved diagnostic is `Trino server is still initializing` and final CSV ready=1, and required all other commands exit 0; the complete wrapper passed in 0.437 seconds.
+
+#### PF-IMP-005/B04
+- State: RESOLVED
+- Category: CODE
+- Affects: `docs/spec.md` AC-026 full-scan negative control and fail-closed causal gate
+- Problem: causal gate ignores raw IO `constraint.none`, so matching raw/decoded plans with `none=true` can still be classified as unpruned full scan.
+- Evidence: fresh read-only reviewer call 1 returned VERDICT BLOCK; tracing `parse_io_plan` shows `none` is omitted from summaries while the new gate compares only column domains. Actual saved full-scan IO plans have `none=false`, so the finding does not invalidate runtime data itself.
+- Unblock: require raw IO `constraint.none is False`, add matching raw/decoded NONE mutations, rerun fast/standard and full final raw replay against unchanged acceptance evidence, then fresh re-review.
+- Resolution: supervisor reproduced the original mutation's false PASS read-only, then added the explicit false check. All 43 unit tests pass, including coordinated raw/decoded mutations with summaries untouched; active LSP is clean. Final standard replay rejects NONE=true for all eight actual full scans while accepting the unchanged 52-cell evidence and matching its saved matrix; all 623 hashes, command/cleanup/environment/boundary checks pass. The fix strengthens only evidence validation and leaves query/data/runtime and summary format unchanged, so acceptance was not repeated.
+
+### Review
+- Verdict: OK
+- Calls: 2
+- Fix iterations: 1
+- Details: call 1 returned VERDICT BLOCK for B04 only. After one targeted fix and all affected checks, fresh built-in reviewer call 2 (read/grep/find/ls/watchdog_diff/contact_supervisor, no bash/write/edit) inspected the complete corrected three-file diff, source AC, status and runtime evidence; it confirmed B04 resolution and returned VERDICT OK with no BLOCKER, DEFERRED or IMPROVEMENT. It did not independently execute tests, LSP, hash or port checks. Post-review hashes confirm no files changed during review; final scope/whitespace/status-preservation and stopped-environment/volume checks passed.
+
+### Next action
+User reviews the checkpoint and, if accepted, stages and commits `scripts/run_partitioning_file_pruning_acceptance.py`, `scripts/tests/test_partitioning_file_pruning_acceptance.py`, and `docs/status.md`; no push or transition to PF-IMP-006 is authorized.

@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import copy
+import csv
+import io
 import json
 import sys
+import tempfile
 import unittest
 from datetime import timedelta
 from pathlib import Path
@@ -1048,6 +1051,178 @@ class PlanParserTests(unittest.TestCase):
             )
 
 
+class CausalMatrixTests(unittest.TestCase):
+    schema = "unit_partition_benchmark"
+
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.build_evidence()
+
+    def write(self, path: str, value: Any) -> None:
+        destination = self.root / path
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        if isinstance(value, list):
+            stream = io.StringIO()
+            csv.writer(stream).writerows(value)
+            text = stream.getvalue()
+        elif isinstance(value, dict):
+            text = json.dumps(value)
+        else:
+            text = value
+        destination.write_text(text)
+
+    def build_evidence(self) -> None:
+        mapping = DatasetContractTests().mapping()
+        self.write("generation/route_mapping.csv", [
+            ["route_id", "bucket_id", "bucket_rank", "is_hot"],
+            *[[row["route_id"], row["bucket_id"], row["bucket_rank"], str(row["is_hot"]).lower()] for row in mapping],
+        ])
+        for dataset, fixture in (("balanced", BalancedWorkloadTests()), ("skewed", SkewedWorkloadTests())):
+            cases = {}
+            topology = [["layout", "tuple_count", "record_count", "min_files_per_tuple", "file_count", "min_records_per_tuple", "max_records_per_tuple"]]
+            self.write(f"layouts/{dataset}/representative_bounds.csv", [
+                ["layout", "selected_files", "bounds_include_target", "no_additional_file_exclusion"],
+                *[[layout, 1, 1, "true"] for layout in target.LAYOUTS],
+            ])
+            for layout in target.LAYOUTS:
+                _, all_files = fixture.metadata(layout, "full_scan")
+                count = len(all_files) - 1
+                topology.append([layout, str(count), "256000", "1", str(count), "1", "256000"])
+                self.write(f"layouts/{dataset}/{layout}/files.csv", [
+                    ["content", "file_path", "record_count", "file_format", "file_size_in_bytes", "lower_bounds", "upper_bounds"],
+                    *[[0, row[0], row[1], "PARQUET", row[2], "typed lower", "typed upper"] for row in all_files[1:]],
+                ])
+                for case in target.DATASET_CASES[dataset]:
+                    base = f"workload/{dataset}/{case}/{layout}"
+                    sql = target.normalize_sql(
+                        target.balanced_query_sql(self.schema, layout, case, "BENCH-R0002")
+                        if dataset == "balanced" else target.skewed_query_sql(self.schema, layout, case, "BENCH-R0004", "BENCH-R0002")
+                    )
+                    self.write(f"{base}/query.sql", sql)
+                    expected = fixture.comparison()[case][layout]
+                    result = {key: str(value) for key, value in expected["result"].items()}
+                    self.write(f"{base}/result.csv", [list(result), list(result.values())])
+                    partitions, files = fixture.metadata(layout, case)
+                    self.write(f"{base}/partitions.csv", partitions)
+                    self.write(f"{base}/files.csv", files)
+                    validator = target.assert_balanced_candidates if dataset == "balanced" else target.assert_skewed_candidates
+                    candidates = validator(partitions, files, schema=self.schema, layout=layout, case=case)
+                    records = expected["candidates"]["record_count"]
+                    anchor = f"lakehouse:{self.schema}.{dataset}_{layout}$data@123"
+                    distributed = {"0": {"name": "ScanProject", "descriptor": {"table": anchor}, "children": []}}
+                    domains = []
+                    # Independent explicit fixture cases, not production domain derivation.
+                    if case in {"day", "day_route", "peak_day", "off_peak_day", "hot_peak", "hot_off_peak", "cold_peak", "cold_off_peak"}:
+                        day, end = ("2025-03-05", "2025-03-06") if case in {"peak_day", "hot_peak", "cold_peak"} else ("2025-03-30", "2025-03-31")
+                        domains.append({"columnName": "picked_up_at", "domain": {"nullsAllowed": False, "ranges": [{"low": {"bound": "EXACTLY", "value": f"{day} 00:00:00.000000 UTC"}, "high": {"bound": "BELOW", "value": f"{end} 00:00:00.000000 UTC"}}]}})
+                    if case in {"route", "day_route", "hot_route", "cold_route", "hot_peak", "hot_off_peak", "cold_peak", "cold_off_peak"}:
+                        route = "BENCH-R0004" if case in {"hot_route", "hot_peak", "hot_off_peak"} else "BENCH-R0002"
+                        endpoint = {"bound": "EXACTLY", "value": route}
+                        domains.append({"columnName": "route_id", "domain": {"nullsAllowed": False, "ranges": [{"low": endpoint, "high": endpoint}]}})
+                    io_plan = {"inputTableColumnInfos": [{"table": {"catalog": "lakehouse", "schemaTable": {"schema": self.schema, "table": f"{dataset}_{layout}"}}, "constraint": {"columnConstraints": domains, "none": False}, "estimate": {"outputRowCount": records}}]}
+                    for name, document in (("explain.json", distributed), ("explain_io.json", io_plan)):
+                        self.write(f"{base}/{name}", document)
+                        self.write(f"{base}/{name}.tsv", json.dumps(document))
+                    runtime_text = f"ScanProject[table = {anchor}]\nInput: {records} rows (1kB), Filtered: 0.00%, Physical input: {records}B, Physical input time: 1us, Splits: 1"
+                    self.write(f"{base}/explain_analyze.txt", runtime_text)
+                    constraints = {value["columnName"] for value in domains}
+                    summary = {
+                        "result": result, "candidates": candidates,
+                        "distributed": target.parse_distributed_plan(json.dumps(distributed), schema=self.schema),
+                        "io": target.parse_io_plan(json.dumps(io_plan), schema=self.schema, expected_constraints=constraints),
+                        "runtime": target.parse_explain_analyze(runtime_text, schema=self.schema),
+                    }
+                    self.write(f"{base}/summary.json", summary)
+                    cases.setdefault(case, {})[layout] = summary
+            self.write(f"layouts/{dataset}/topology.csv", topology)
+            comparator = target.assert_balanced_comparison if dataset == "balanced" else target.assert_skewed_comparison
+            self.write(f"workload/{dataset}/comparison.json", {**comparator(cases), "cases": cases})
+
+    def test_complete_matrix_and_full_scan_negative_controls(self) -> None:
+        result = target.assert_causal_evidence_matrix(self.root, schema=self.schema)
+        self.assertEqual(result["query_layout_count"], 52)
+        self.assertFalse(result["wall_clock_used_for_pass"])
+        for dataset in ("balanced", "skewed"):
+            for control in result["datasets"][dataset]["full_scan_controls"].values():
+                self.assertEqual(control["input_rows"], 256000)
+                self.assertTrue(control["all_tuples_and_files"])
+                self.assertFalse(control["pruning"])
+
+    def test_every_cell_member_is_required_including_raw_plan_and_summary(self) -> None:
+        base = "workload/skewed/cold_off_peak/dr"
+        for name in sorted(target.CASE_EVIDENCE_FILES):
+            path = self.root / base / name
+            original = path.read_text()
+            path.unlink()
+            try:
+                with self.subTest(name=name), self.assertRaisesRegex(target.AcceptanceError, "missing causal evidence"):
+                    target.assert_causal_evidence_matrix(self.root, schema=self.schema)
+            finally:
+                path.write_text(original)
+
+    def test_matrix_rejects_raw_mutations_and_stale_summaries(self) -> None:
+        base = "workload/balanced/day/dr"
+        mutations = [
+            (f"{base}/query.sql", lambda text: text.replace("2025-03-30", "2025-03-29"), "noncanonical"),
+            (f"{base}/result.csv", lambda text: text.replace("5120", "5119"), "unexpected"),
+            (f"{base}/result.csv", lambda text: text.splitlines()[0] + "\n", "one causal aggregate"),
+            (f"{base}/files.csv", lambda text: text.replace("true", "false"), "bounds/counts"),
+            (f"{base}/summary.json", lambda text: text.replace('"splits": 1', '"splits": 2'), "raw/summary"),
+            (f"{base}/explain.json", lambda text: text.replace("$data@123", "$data@456"), "raw/decoded"),
+            (f"{base}/explain_analyze.txt", lambda text: text.replace("$data@123", "$data@456"), "snapshot mismatch"),
+            (f"{base}/explain_analyze.txt", lambda text: text.replace("Physical input:", "Missing input:"), "anchor missing"),
+            (f"{base}/explain_analyze.txt", lambda text: text + "\n" + text.splitlines()[-1], "ambiguous"),
+            ("workload/balanced/full_scan/dr/explain_analyze.txt", lambda text: text.replace("Filtered: 0.00%", "Filtered: 1.00%"), "raw/summary"),
+            ("workload/balanced/comparison.json", lambda text: text.replace('"query_layout_count": 16', '"query_layout_count": 15'), "comparison mismatch"),
+        ]
+        for relative, mutate, error in mutations:
+            path = self.root / relative
+            original = path.read_text()
+            path.write_text(mutate(original))
+            try:
+                with self.subTest(relative=relative, error=error), self.assertRaisesRegex(target.AcceptanceError, error):
+                    target.assert_causal_evidence_matrix(self.root, schema=self.schema)
+            finally:
+                path.write_text(original)
+
+    def test_wrong_predicate_domains_fail_even_with_raw_decoded_consistency(self) -> None:
+        base = "workload/balanced/day/dr"
+        for name in ("explain_io.json", "explain_io.json.tsv"):
+            path = self.root / base / name
+            path.write_text(path.read_text().replace("2025-03-30", "2025-03-29"))
+        with self.assertRaisesRegex(target.AcceptanceError, "IO predicate domains"):
+            target.assert_causal_evidence_matrix(self.root, schema=self.schema)
+
+    def test_none_domain_rejected_without_changing_summaries(self) -> None:
+        for dataset, case in (("balanced", "full_scan"), ("skewed", "full_scan"), ("balanced", "day")):
+            base = self.root / f"workload/{dataset}/{case}/u"
+            paths = [base / name for name in ("explain_io.json", "explain_io.json.tsv")]
+            originals = [path.read_text() for path in paths]
+            for invalid in (True, None, 0, "false", "missing"):
+                document = json.loads(originals[0])
+                constraint = document["inputTableColumnInfos"][0]["constraint"]
+                if invalid == "missing":
+                    constraint.pop("none")
+                else:
+                    constraint["none"] = invalid
+                for path in paths:
+                    path.write_text(json.dumps(document))
+                try:
+                    with self.subTest(dataset=dataset, case=case, invalid=invalid), self.assertRaisesRegex(target.AcceptanceError, "explicitly be non-NONE"):
+                        target.assert_causal_evidence_matrix(self.root, schema=self.schema)
+                finally:
+                    for path, original in zip(paths, originals, strict=True):
+                        path.write_text(original)
+
+    def test_full_scan_cannot_substitute_another_inventoried_file(self) -> None:
+        path = self.root / "workload/balanced/full_scan/dr/files.csv"
+        path.write_text(path.read_text().replace("balanced_dr-uuid", "balanced_dr-other"))
+        with self.assertRaisesRegex(target.AcceptanceError, "layout inventory"):
+            target.assert_causal_evidence_matrix(self.root, schema=self.schema)
+
+
 class BoundsAndManifestTests(unittest.TestCase):
     def bounds_rows(self) -> list[dict[str, Any]]:
         return [
@@ -1089,7 +1264,7 @@ class BoundsAndManifestTests(unittest.TestCase):
 
     def test_manifest_covers_all_52_query_layout_cases(self) -> None:
         required = target.required_final_evidence_paths()
-        self.assertEqual(len(required), 428)
+        self.assertEqual(len(required), 535)
         target.assert_final_evidence_manifest(
             self.manifest(), cleanup=self.cleanup()
         )

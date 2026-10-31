@@ -125,7 +125,9 @@ CASE_EVIDENCE_FILES = {
     "partitions.csv",
     "files.csv",
     "explain.json",
+    "explain.json.tsv",
     "explain_io.json",
+    "explain_io.json.tsv",
     "explain_analyze.txt",
     "summary.json",
 }
@@ -135,6 +137,9 @@ REQUIRED_FINAL_EVIDENCE_PATHS = {
     "generation/balanced_group_counts.csv",
     "generation/skewed_group_counts.csv",
     "layouts/summary.json",
+    "workload/causal_matrix.json",
+    "workload/balanced/comparison.json",
+    "workload/skewed/comparison.json",
     "runtime/catalog_tables.csv",
     "runtime/polaris_catalog.json",
     "runtime/object_paths.json",
@@ -1690,10 +1695,12 @@ def parse_explain_analyze(text: str, *, schema: str) -> dict[str, Any]:
     if len(scans) != 1:
         raise AcceptanceError(f"expected one runtime scan, got {len(scans)}")
     scan = owned[0]
-    stats = RUNTIME_STATS_PATTERN.search(text[scan.end() :])
+    stats = list(RUNTIME_STATS_PATTERN.finditer(text[scan.end() :]))
     if not stats:
         raise AcceptanceError("physical-input anchor missing after scan")
-    values = stats.groupdict()
+    if len(stats) != 1:
+        raise AcceptanceError("ambiguous physical-input statistics after scan")
+    values = stats[0].groupdict()
     return {
         "scan_count": 1,
         "scan_anchor": scan.group(0),
@@ -1737,6 +1744,148 @@ def assert_bounds_decisions(rows: Sequence[Mapping[str, Any]]) -> None:
             raise AcceptanceError(
                 f"file bounds exclude representative files for {layout}: {row}"
             )
+
+
+def assert_causal_evidence_matrix(evidence_dir: Path, *, schema: str) -> dict[str, Any]:
+    """Rebuild all 52 cells from raw evidence; never trust presence or PASS flags."""
+    def read_text(relative: str) -> str:
+        path = evidence_dir / relative
+        if not path.resolve().is_relative_to(evidence_dir.resolve()):
+            raise AcceptanceError(f"evidence path escapes run directory: {relative}")
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError as error:
+            raise AcceptanceError(f"missing causal evidence: {relative}") from error
+        if not text.strip():
+            raise AcceptanceError(f"empty causal evidence: {relative}")
+        return text
+
+    def read_json(relative: str) -> Any:
+        try:
+            return json.loads(read_text(relative))
+        except json.JSONDecodeError as error:
+            raise AcceptanceError(f"invalid causal JSON: {relative}") from error
+
+    def read_csv(relative: str) -> list[list[str]]:
+        return list(csv.reader(read_text(relative).splitlines()))
+
+    mapping = parse_route_mapping_rows(read_csv("generation/route_mapping.csv"))
+    roles = assert_route_mapping(mapping)
+    hot = str(roles["representative_hot_route"])
+    cold = str(roles["representative_cold_route"])
+    datasets = {}
+    for dataset in DATASETS:
+        assert_topology_rows(read_csv(f"layouts/{dataset}/topology.csv"), dataset=dataset)
+        bounds = parse_csv_dict_rows(
+            read_csv(f"layouts/{dataset}/representative_bounds.csv"),
+            expected_header=["layout", "selected_files", "bounds_include_target", "no_additional_file_exclusion"],
+            label=f"{dataset} causal bounds",
+        )
+        assert_bounds_decisions(bounds)
+        cases: dict[str, Any] = {}
+        full_scan_controls = {}
+        for layout in LAYOUTS:
+            inventory_rows = read_csv(f"layouts/{dataset}/{layout}/files.csv")
+            assert_file_inventory_rows(inventory_rows, schema=schema, dataset=dataset, layout=layout)
+            inventory = {
+                row[1]: (row[2], row[4]) for row in inventory_rows[1:]
+            }
+            for case in DATASET_CASES[dataset]:
+                base = f"workload/{dataset}/{case}/{layout}"
+                # Require every raw/parsed member before deriving any summary.
+                for name in sorted(CASE_EVIDENCE_FILES):
+                    read_text(f"{base}/{name}")
+                sql = normalize_sql(
+                    balanced_query_sql(schema, layout, case, cold)
+                    if dataset == "balanced"
+                    else skewed_query_sql(schema, layout, case, hot, cold)
+                )
+                if read_text(f"{base}/query.sql") != sql:
+                    raise AcceptanceError(f"noncanonical workload SQL: {base}")
+                result = parse_csv_dict_rows(
+                    read_csv(f"{base}/result.csv"),
+                    expected_header=list(expected_case_aggregate(dataset, case)),
+                    label=f"{base} result",
+                )
+                if len(result) != 1:
+                    raise AcceptanceError(f"expected one causal aggregate row: {base}")
+                assert_case_aggregate(result[0], dataset, case)
+                partitions = read_csv(f"{base}/partitions.csv")
+                files = read_csv(f"{base}/files.csv")
+                validator = assert_balanced_candidates if dataset == "balanced" else assert_skewed_candidates
+                candidates = validator(partitions, files, schema=schema, layout=layout, case=case)
+                selected = {row[0]: (row[1], row[2]) for row in files[1:]}
+                if any(inventory.get(path) != counts for path, counts in selected.items()):
+                    raise AcceptanceError(f"candidates differ from layout inventory: {base}")
+                if case == "full_scan" and selected != inventory:
+                    raise AcceptanceError(f"full scan does not select every inventory file: {base}")
+
+                constraints = set()
+                if "picked_up_at >=" in sql:
+                    constraints.add("picked_up_at")
+                if "route_id =" in sql:
+                    constraints.add("route_id")
+                distributed_raw = read_text(f"{base}/explain.json.tsv")
+                io_raw = read_text(f"{base}/explain_io.json.tsv")
+                for name, raw in (("explain.json", distributed_raw), ("explain_io.json", io_raw)):
+                    if decode_cli_json(raw) != read_json(f"{base}/{name}"):
+                        raise AcceptanceError(f"raw/decoded plan mismatch: {base}/{name}")
+                distributed = parse_distributed_plan(distributed_raw, schema=schema)
+                io = parse_io_plan(io_raw, schema=schema, expected_constraints=constraints)
+                io_constraint = decode_cli_json(io_raw)["inputTableColumnInfos"][0].get("constraint", {})
+                if io_constraint.get("none") is not False:
+                    raise AcceptanceError(f"causal IO domain must explicitly be non-NONE: {base}")
+                runtime = parse_explain_analyze(read_text(f"{base}/explain_analyze.txt"), schema=schema)
+                anchor = f"{CATALOG}:{schema}.{dataset}_{layout}$data@"
+                if (
+                    not distributed["table_anchor"].startswith(anchor)
+                    or io["table"]["schemaTable"]["table"] != f"{dataset}_{layout}"
+                    or f"[table = {anchor}" not in runtime["scan_anchor"]
+                    or set(io["constraint_columns"]) != constraints
+                ):
+                    raise AcceptanceError(f"wrong causal scan identity/constraints: {base}")
+                planned_snapshot = re.search(r"\$data@(\d+)", distributed["table_anchor"])
+                runtime_snapshot = re.search(r"\$data@(\d+)", runtime["scan_anchor"])
+                if planned_snapshot is None or runtime_snapshot is None or planned_snapshot[1] != runtime_snapshot[1]:
+                    raise AcceptanceError(f"causal scan snapshot mismatch: {base}")
+                expected_domains = {}
+                dates = re.findall(r"TIMESTAMP '(\d{4}-\d{2}-\d{2}) 00:00:00 UTC'", sql)
+                if dates:
+                    expected_domains["picked_up_at"] = {
+                        "nullsAllowed": False, "ranges": [{
+                            "low": {"bound": "EXACTLY", "value": f"{dates[0]} 00:00:00.000000 UTC"},
+                            "high": {"bound": "BELOW", "value": f"{dates[1]} 00:00:00.000000 UTC"},
+                        }],
+                    }
+                route = re.search(r"route_id = '(BENCH-R\d{4})'", sql)
+                if route:
+                    endpoint = {"bound": "EXACTLY", "value": route[1]}
+                    expected_domains["route_id"] = {"nullsAllowed": False, "ranges": [{"low": endpoint, "high": endpoint}]}
+                actual_domains = {value["columnName"]: value.get("domain") for value in io["column_constraints"]}
+                if actual_domains != expected_domains or len(io["column_constraints"]) != len(expected_domains):
+                    raise AcceptanceError(f"wrong causal IO predicate domains: {base}")
+                summary = {"result": result[0], "candidates": candidates, "distributed": distributed, "io": io, "runtime": runtime}
+                if summary != read_json(f"{base}/summary.json"):
+                    raise AcceptanceError(f"raw/summary mismatch: {base}")
+                cases.setdefault(case, {})[layout] = summary
+                if case == "full_scan":
+                    if runtime["filtered_pct"] != 0 or distributed["constraint_columns"] or distributed["filter_predicate"]:
+                        raise AcceptanceError(f"full scan claims filtering/pruning: {base}")
+                    full_scan_controls[layout] = {
+                        **candidates, "input_rows": runtime["input_rows"],
+                        "physical_input_bytes": runtime["physical_input_bytes"],
+                        "all_tuples_and_files": True, "pruning": False,
+                    }
+        comparator = assert_balanced_comparison if dataset == "balanced" else assert_skewed_comparison
+        comparison = comparator(cases)
+        if read_json(f"workload/{dataset}/comparison.json") != {**comparison, "cases": cases}:
+            raise AcceptanceError(f"causal comparison mismatch: {dataset}")
+        datasets[dataset] = {**comparison, "full_scan_controls": full_scan_controls}
+    return {
+        "case_count": 13, "query_layout_count": 52, "raw_evidence_revalidated": True,
+        "bounds_isolate_partition_pruning": True, "wall_clock_used_for_pass": False,
+        "datasets": datasets,
+    }
 
 
 def required_final_evidence_paths() -> set[str]:
@@ -2101,9 +2250,12 @@ class PartitioningFilePruningAcceptanceRun(AcceptanceRun):
             representative_bucket,
         )
         self.ac_results["AC-025"] = "PASS"
+        matrix = assert_causal_evidence_matrix(self.evidence_dir, schema=self.benchmark_schema)
+        self.write_json("workload/causal_matrix.json", matrix)
+        self.ac_results["AC-026"] = "PASS"
         raise AcceptanceError(
-            "partitioning/file-pruning causal evidence checks are incomplete: "
-            "continue with PF-IMP-005"
+            "partitioning/file-pruning catalog evidence and finalization are incomplete: "
+            "continue with PF-IMP-006"
         )
 
     def run_balanced_workload(self, route_id: str, route_bucket: int) -> None:
