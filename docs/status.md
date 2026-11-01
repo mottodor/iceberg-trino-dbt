@@ -1702,3 +1702,53 @@ User reviews the checkpoint and, if accepted, stages and commits `scripts/run_pa
 
 ### Next action
 User reviews the checkpoint and, if accepted, stages and commits `scripts/run_partitioning_file_pruning_acceptance.py`, `scripts/tests/test_partitioning_file_pruning_acceptance.py`, and `docs/status.md`; no push or transition to PF-IMP-006 is authorized.
+
+## TASK_ID: PF-IMP-006
+
+- Source: `docs/bootstrap-partitioning-file-pruning.md` §5.3 PF-IMP-006; `docs/spec.md` §11.7 AC-021–AC-027; current user authorization for Docker runtime actions
+- Status: REVIEW_READY
+- Updated: 2026-11-01T00:34:37+03:00
+- Baseline HEAD: 0d3324a36088e3020923ee14bf81340052f95ae4
+
+### Progress
+- Implemented: exact Trino/Polaris eight-table registration and per-layout RustFS data/metadata/manifests binding, immutable file/runtime boundary captures, orphan-prefix collision guard and fail-closed finalization after cleanup/restoration/secret scan/actual manifest hashes. Fresh full acceptance `pfimp006_final` exited 0 in 578.243 seconds with AC-021–AC-027 PASS. Final raw replay passed all generation/layout/52-cell/catalog/object/isolation/cleanup checks, 640 hashes, 404 command records and four actual-evidence mutations in 0.267 seconds. Final 54 tests passed in 2.533 seconds; compilation/CLI/whitespace pass, active LSP has zero findings with one file unconfirmed on clean recheck/timeout. Initial_stopped is restored, ports are free and all 12 initial global volumes are preserved. No expensive failed acceptance or acceptance rerun occurred.
+- Remaining: none within PF-IMP-006. Only the isolated runner, its tests and this status section changed; shared/completed-slice code, stack and dependencies are unchanged.
+
+### AC evidence
+| AC / ссылка на источник | Result | Проверка / evidence / причина |
+|---|---|---|
+| `docs/spec.md` AC-021 | PASS | acceptance: `python3 scripts/run_partitioning_file_pruning_acceptance.py --run-id pfimp006_final` with command-local training environment exited 0 in 578.243 seconds. `preflight/immutable_before.json` equals `runtime/immutable_after.json` (67 protected file hashes and HEAD); final replay matched current files. `runtime/boundary_before/` and `boundary_after/` have identical non-task schema/table listings and object key/size/ETag maps; `runtime/isolation.json` confirms unchanged. Diff contains only the three allowed paths, prior status sections are byte-preserved, and command review found no writes outside the exact benchmark schema/prefix or forbidden maintenance. No shared-path change, so completed-slice full regression is not required. |
+| `docs/spec.md` AC-022 | PASS | acceptance and final standard replay: both eight-column datasets have 256000 unique rows, 50 days, ten bucket-aware routes, exact 500 day/route groups each and state/SLA/nullability assertions. `generation/` contains mapping, schemas, group counts and contract CSVs; full aggregates are 256000/224000/160000/4800000. |
+| `docs/spec.md` AC-023 | PASS | acceptance and final replay: exact eight-table listing, U/D/R/DR specs, 256000 rows per layout, zero bidirectional full-row differences, nonempty tuple counts 1/50/4/200 and complete file inventories. `layouts/` and both actual Trino/Polaris runtime listings agree. |
+| `docs/spec.md` AC-024 | PASS | acceptance and final 52-cell raw replay: all sixteen balanced SQL/result/partition/file/distributed/IO/analyze/summary bundles and `workload/balanced/comparison.json` pass exact aggregates, eligible-row matrix and physical-input reductions/combined strict subsets. |
+| `docs/spec.md` AC-025 | PASS | acceptance and final raw replay: all thirty-six skewed bundles and `workload/skewed/comparison.json` pass nine exact aggregates, eligible records 20480/1280, 115200/12800 and DR 9216/576/1024/64; physical-input/density and co-bucket assertions pass. |
+| `docs/spec.md` AC-026 | PASS | acceptance and final replay match `workload/causal_matrix.json` for all 52 raw bundles, including inventory/bounds binding and eight unpruned full scans. No wall-clock threshold defines PASS. Final 54 positive/mutation tests pass; compilation/CLI and active LSP have no findings (one LSP clean recheck remains unconfirmed). |
+| `docs/spec.md` AC-027 | PASS | acceptance: runtime Trino and Polaris REST listings contain exactly eight registrations; `runtime/end_to_end.json` binds 542 RustFS objects, including all 510 Parquet data files with exact Iceberg path/size and metadata JSON/Avro for every table. Cleanup confirms header-only schema listing and empty exact prefix; 480 inventoried residual keys were deleted in one bounded batch. Environment is stopped again, four ports free, all 12 original global volumes preserved. Secret scan is clean; manifest covers all 546 required paths and 640 actual files with valid sizes/SHA-256. Final standard replay (0.267 seconds) rejected four read-only actual-evidence mutations and verified all 404 commands: only expected readiness exits [1,0], all other commands exit 0. |
+
+### Issues
+#### PF-IMP-006/B01
+- State: RESOLVED
+- Category: TEST
+- Affects: mandatory fast/LSP gate before acceptance
+- Problem: the new negative catalog test contains an unclosed outer list.
+- Evidence: active post-edit LSP reports unclosed brackets at test line 1325; no runtime assertion has run.
+- Unblock: close the list, rerun active diagnostics and the complete unittest suite.
+- Resolution: bracket corrected; compilation and all final 54 tests pass. Active diagnostics report zero findings (one file clean and one push-only clean recheck unconfirmed); the syntax assertion is independently confirmed by successful compilation and suite execution.
+
+#### PF-IMP-006/B02
+- State: RESOLVED
+- Category: TEST
+- Affects: mandatory FINAL_EVIDENCE_AND_DIFF_GATE
+- Problem: the post-run replay wrapper expects a readiness CSV under an incorrect path and stops before its final live environment checks.
+- Evidence: full acceptance `pfimp006_final` exited 0 in 578.243 seconds with AC-021–AC-027 PASS; raw generation/layout/52-cell/catalog/object/isolation/secret/640-hash checks passed before `FileNotFoundError: preflight/query_ready.csv`. Journal shows readiness exits [1,0] and 404 total commands.
+- Unblock: inspect the inherited readiness evidence path, correct only the wrapper and complete final raw/environment checks without repeating unchanged acceptance.
+- Resolution: corrected wrapper reads `runtime/trino_ready.csv`, checks the expected initialization diagnostic and readiness exits [1,0], then passes complete raw/640-hash/404-command/four-mutation/ports/containers/all-12-volume assertions in 0.267 seconds. Runtime code and evidence were unchanged; acceptance was not repeated.
+
+### Review
+- Verdict: OK
+- Calls: 1
+- Fix iterations: 0
+- Details: one fresh builtin read-only reviewer (read/grep/find/ls/watchdog_diff/contact_supervisor, no bash/write/edit; effective configuration checked) inspected the complete three-file diff, source contracts, this section, runtime boundaries, catalog/object evidence, layouts, causal matrix and representative raw bundles, cleanup, manifest, secret scan and command journal. VERDICT OK, no BLOCKER/DEFERRED/IMPROVEMENT. Exhaustive test/hash/replay and live port/global-volume checks were supervisor evidence, not independently executed by reviewer. Post-review hashes of all three files match the pre-review snapshot; only permitted status/verdict/time/next-action finalization follows.
+
+### Next action
+User reviews the checkpoint and, if accepted, authorizes staging and committing `scripts/run_partitioning_file_pruning_acceptance.py`, `scripts/tests/test_partitioning_file_pruning_acceptance.py`, and `docs/status.md` with proposed message `feat: finalize partition pruning acceptance evidence and cleanup`; no staging, commit, push or next-task transition has been performed.

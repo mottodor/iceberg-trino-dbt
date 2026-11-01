@@ -11,7 +11,9 @@ import tempfile
 import unittest
 from datetime import timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
+from unittest.mock import patch
 
 SCRIPTS_DIR = Path(__file__).resolve().parents[1]
 if str(SCRIPTS_DIR) not in sys.path:
@@ -1264,7 +1266,7 @@ class BoundsAndManifestTests(unittest.TestCase):
 
     def test_manifest_covers_all_52_query_layout_cases(self) -> None:
         required = target.required_final_evidence_paths()
-        self.assertEqual(len(required), 535)
+        self.assertEqual(len(required), 546)
         target.assert_final_evidence_manifest(
             self.manifest(), cleanup=self.cleanup()
         )
@@ -1293,6 +1295,198 @@ class BoundsAndManifestTests(unittest.TestCase):
         manifest["files"][0]["sha256"] = "not-a-digest"
         with self.assertRaisesRegex(target.AcceptanceError, "invalid evidence"):
             target.assert_final_evidence_manifest(manifest, cleanup=self.cleanup())
+
+
+class CatalogAndFinalizationTests(unittest.TestCase):
+    schema = "unit_partition_benchmark"
+
+    def catalog_fixture(self) -> tuple[list[list[str]], dict[str, Any], dict[str, Any], dict[str, int]]:
+        tables = sorted(f"{dataset}_{layout}" for dataset in target.DATASETS for layout in target.LAYOUTS)
+        rows = [["table_schema", "table_name"], *[[self.schema, table] for table in tables]]
+        polaris = {"identifiers": [{"namespace": [self.schema], "name": table} for table in tables]}
+        contents = []
+        data_files = {}
+        for table in tables:
+            root = f"warehouse/{self.schema}/{table}-uuid"
+            for tail in ("data/file.parquet", "metadata/v1.metadata.json", "metadata/snap.avro"):
+                key = f"{root}/{tail}"
+                contents.append({"Key": key, "Size": 128})
+                if key.endswith(".parquet"):
+                    data_files[key] = 128
+        return rows, polaris, {"Prefix": f"warehouse/{self.schema}/", "Contents": contents}, data_files
+
+    def test_immutable_capture_rejects_shared_or_untracked_scope_change(self) -> None:
+        for changed, untracked in (("compose.yaml\n", ""), ("", "unexpected.py\n")):
+            with self.subTest(changed=changed, untracked=untracked), tempfile.TemporaryDirectory() as directory:
+                run = target.PartitioningFilePruningAcceptanceRun("unit", Path(directory))
+                with patch.object(run, "capture", side_effect=[SimpleNamespace(stdout=changed), SimpleNamespace(stdout=untracked)]):
+                    with self.assertRaisesRegex(target.AcceptanceError, "completed/shared paths changed"):
+                        run.capture_immutable_boundary()
+
+    def test_prefix_collision_never_acquires_ownership(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            run = target.PartitioningFilePruningAcceptanceRun("unit", Path(directory))
+            with patch.object(run, "query_csv", return_value=[["schema_name"]]), patch.object(run, "list_objects", return_value={"Contents": [{"Key": "existing"}]}):
+                with self.assertRaisesRegex(target.AcceptanceError, "object prefix already exists"):
+                    run.assert_prefixes_absent()
+            self.assertFalse(run.prefixes_owned)
+
+    def test_owned_workflow_failure_cleans_data_and_stops_before_finalization(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            run = target.PartitioningFilePruningAcceptanceRun("unit", Path(directory))
+            run.stack_started = run.query_ready = True
+            failure = target.AcceptanceError("injected after ownership")
+            with (
+                patch.object(run, "preflight"),
+                patch.object(run, "start_stack"),
+                patch.object(run, "assert_stack_state"),
+                patch.object(run, "assert_query_ready"),
+                patch.object(run, "assert_prefixes_absent"),
+                patch.object(run, "capture_runtime_boundary", return_value={"schemas": [["schema_name"]]}),
+                patch.object(run, "run_partitioning_file_pruning_workflow", side_effect=failure),
+                patch.object(run, "cleanup_task_data") as cleanup,
+                patch.object(run, "stop_stack") as stop,
+                patch.object(run, "assert_environment_restored") as restore,
+                patch.object(run, "finalize", side_effect=lambda error: error),
+            ):
+                with self.assertRaisesRegex(target.AcceptanceError, "injected after ownership"):
+                    run.run()
+                cleanup.assert_called_once()
+                stop.assert_called_once()
+                restore.assert_called_once()
+            self.assertTrue(run.prefixes_owned)
+            self.assertTrue(run.data_cleaned)
+            self.assertEqual(run.ac_results["AC-027"], "NOT_RUN")
+
+    def test_exact_eight_catalogs_and_all_layout_objects(self) -> None:
+        rows, polaris, objects, data_files = self.catalog_fixture()
+        result = target.assert_catalog_object_evidence(rows, polaris, objects, schema=self.schema, data_files=data_files)
+        self.assertEqual(result["object_count"], 24)
+        self.assertEqual(result["data_file_count"], 8)
+
+    def test_rejects_missing_extra_duplicate_foreign_catalog_registration(self) -> None:
+        rows, polaris, objects, files = self.catalog_fixture()
+        for bad_rows in (rows[:-1], [*rows, rows[-1]], [rows[0], *[["foreign", r[1]] for r in rows[1:]]]):
+            with self.subTest(rows=bad_rows), self.assertRaisesRegex(target.AcceptanceError, "Trino registration"):
+                target.assert_catalog_object_evidence(bad_rows, polaris, objects, schema=self.schema, data_files=files)
+        for mutate in (
+            lambda p: p["identifiers"].pop(),
+            lambda p: p["identifiers"].append(p["identifiers"][0]),
+            lambda p: p["identifiers"][0].update(namespace=["foreign"]),
+            lambda p: p.update({"next-page-token": "more"}),
+        ):
+            bad = copy.deepcopy(polaris)
+            mutate(bad)
+            with self.assertRaisesRegex(target.AcceptanceError, "Polaris registration"):
+                target.assert_catalog_object_evidence(rows, bad, objects, schema=self.schema, data_files=files)
+
+    def test_rejects_missing_table_metadata_foreign_duplicate_or_wrong_size_objects(self) -> None:
+        rows, polaris, objects, files = self.catalog_fixture()
+        for mutate in (
+            lambda o: o.update(Contents=[]),
+            lambda o: o["Contents"].pop(),
+            lambda o: o["Contents"].pop(0),
+            lambda o: o["Contents"].append(o["Contents"][0]),
+            lambda o: o["Contents"][0].update(Key="warehouse/foreign/file.parquet"),
+            lambda o: o["Contents"][0].update(Size=0),
+            lambda o: o["Contents"][0].update(Size=129),
+            lambda o: o.update(Prefix="warehouse/wrong/"),
+        ):
+            bad = copy.deepcopy(objects)
+            mutate(bad)
+            with self.assertRaises(target.AcceptanceError):
+                target.assert_catalog_object_evidence(rows, polaris, bad, schema=self.schema, data_files=files)
+
+    def test_boundary_rejects_changed_fingerprints_objects_and_missing_capture(self) -> None:
+        before = {"head": "abc", "sha256": {"compose.yaml": "digest"}}
+        target.assert_boundary_unchanged(before, copy.deepcopy(before))
+        for after in ({}, {**before, "head": "changed"}, {**before, "sha256": {}}):
+            with self.assertRaisesRegex(target.AcceptanceError, "boundary changed"):
+                target.assert_boundary_unchanged(before, after)
+        runtime = {"schemas": [["schema_name"], ["core"]], "objects": {"warehouse/core/file": {"size": 12, "etag": "abc"}}}
+        for after in ({**runtime, "schemas": [["schema_name"]]}, {**runtime, "objects": {}}):
+            with self.assertRaises(target.AcceptanceError):
+                target.assert_boundary_unchanged(runtime, after)
+
+    def finalizer_fixture(self, root: Path) -> target.PartitioningFilePruningAcceptanceRun:
+        run = target.PartitioningFilePruningAcceptanceRun("unit", root)
+        for name in target.required_final_evidence_paths():
+            run.write_text(name, "{}\n")
+        run.write_csv("cleanup/remaining_schemas.csv", [["schema_name"]])
+        run.write_json("cleanup/remaining_objects.json", {})
+        run.write_json("cleanup/environment.json", {"preexisting_volumes_preserved": True, "final_project_containers": []})
+        run.immutable_before = {"head": "abc", "sha256": {"compose.yaml": "digest"}}
+        for ac in target.PARTITIONING_FILE_PRUNING_ACS[1:-1]:
+            run.ac_results[ac] = "PASS"
+        run.catalog_evidence_captured = run.data_cleaned = run.environment_restored = run.isolation_verified = True
+        return run
+
+    def finalize_without_runtime(self, run: target.PartitioningFilePruningAcceptanceRun, error: Exception | None = None) -> Exception | None:
+        with (
+            patch.object(run, "assert_no_secrets_in_evidence"),
+            patch.object(run, "capture_immutable_boundary", return_value=copy.deepcopy(run.immutable_before)),
+        ):
+            return run.finalize(error)
+
+    def test_final_pass_only_after_all_gates_and_valid_hashes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            run = self.finalizer_fixture(root)
+            self.assertIsNone(self.finalize_without_runtime(run))
+            summary = json.loads((root / "acceptance_summary.json").read_text())
+            self.assertEqual(summary["outcome"], "PASS")
+            self.assertEqual(set(summary["ac_results"].values()), {"PASS"})
+            manifest = json.loads((root / "evidence_manifest.json").read_text())
+            target.assert_manifest_files(manifest, root)
+            (root / "runtime/catalog_tables.csv").write_text("mutated")
+            with self.assertRaisesRegex(target.AcceptanceError, "content mismatch"):
+                target.assert_manifest_files(manifest, root)
+
+    def test_finalization_rejects_every_pending_behavior_and_lifecycle_flag(self) -> None:
+        for field in ("AC-022", "AC-023", "AC-024", "AC-025", "AC-026", "catalog_evidence_captured", "data_cleaned", "environment_restored", "isolation_verified"):
+            with self.subTest(field=field), tempfile.TemporaryDirectory() as directory:
+                run = self.finalizer_fixture(Path(directory))
+                if field.startswith("AC-"):
+                    run.ac_results[field] = "NOT_RUN"
+                else:
+                    setattr(run, field, False)
+                self.assertIsInstance(self.finalize_without_runtime(run), target.AcceptanceError)
+                summary = json.loads((run.evidence_dir / "acceptance_summary.json").read_text())
+                self.assertEqual(summary["outcome"], "FAIL")
+                self.assertNotEqual(summary["ac_results"]["AC-027"], "PASS")
+
+    def test_finalization_rejects_false_cleanup_missing_evidence_and_prior_error(self) -> None:
+        for defect in ("schema", "objects", "volumes", "containers", "missing", "prior"):
+            with self.subTest(defect=defect), tempfile.TemporaryDirectory() as directory:
+                run = self.finalizer_fixture(Path(directory))
+                if defect == "schema":
+                    run.write_csv("cleanup/remaining_schemas.csv", [["schema_name"], [self.schema]])
+                elif defect == "objects":
+                    run.write_json("cleanup/remaining_objects.json", {"Contents": [{"Key": "residual"}]})
+                elif defect in {"volumes", "containers"}:
+                    run.write_json("cleanup/environment.json", {"preexisting_volumes_preserved": defect != "volumes", "final_project_containers": ["trino"] if defect == "containers" else []})
+                elif defect == "missing":
+                    (run.evidence_dir / "runtime/catalog_tables.csv").unlink()
+                prior = target.AcceptanceError("injected workflow failure") if defect == "prior" else None
+                self.assertIsNotNone(self.finalize_without_runtime(run, prior))
+                summary = json.loads((run.evidence_dir / "acceptance_summary.json").read_text())
+                self.assertEqual(summary["outcome"], "FAIL")
+                self.assertEqual(summary["ac_results"]["AC-027"], "NOT_RUN")
+
+    def test_secret_scan_and_manifest_failures_never_publish_pass(self) -> None:
+        for method in ("assert_no_secrets_in_evidence", "write_evidence_manifest", "write_summary"):
+            with self.subTest(method=method), tempfile.TemporaryDirectory() as directory:
+                run = self.finalizer_fixture(Path(directory))
+                with (
+                    patch.object(run, "capture_immutable_boundary", return_value=run.immutable_before),
+                    patch.object(run, "assert_no_secrets_in_evidence"),
+                    patch.object(run, method, side_effect=target.AcceptanceError("injected finalization failure")),
+                ):
+                    self.assertIsNotNone(run.finalize(None))
+                self.assertEqual(run.ac_results["AC-027"], "NOT_RUN")
+                summary = run.evidence_dir / "acceptance_summary.json"
+                if summary.exists():
+                    self.assertEqual(json.loads(summary.read_text())["outcome"], "FAIL")
 
 
 if __name__ == "__main__":

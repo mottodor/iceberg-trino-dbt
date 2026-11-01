@@ -4,11 +4,17 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import codecs
 import csv
+import hashlib
 import json
+import os
 import re
 import sys
+import urllib.error
+import urllib.parse
+import urllib.request
 from collections.abc import Iterable, Mapping, Sequence
 from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
@@ -18,6 +24,7 @@ from typing import Any
 from run_acceptance import (
     AcceptanceError,
     AcceptanceRun,
+    BUCKET,
     CATALOG,
     DEFAULT_EVIDENCE_ROOT,
     ROOT,
@@ -143,10 +150,27 @@ REQUIRED_FINAL_EVIDENCE_PATHS = {
     "runtime/catalog_tables.csv",
     "runtime/polaris_catalog.json",
     "runtime/object_paths.json",
+    "runtime/polaris_tables.json",
+    "runtime/end_to_end.json",
+    "preflight/immutable_before.json",
+    "runtime/immutable_after.json",
+    "runtime/isolation.json",
+    *{
+        f"runtime/boundary_{stage}/{name}"
+        for stage in ("before", "after")
+        for name in ("schemas.csv", "tables.csv", "objects.json")
+    },
     "cleanup/remaining_schemas.csv",
     "cleanup/remaining_objects.json",
     "cleanup/environment.json",
     "secret_scan.json",
+}
+
+
+MUTABLE_TASK_PATHS = {
+    "scripts/run_partitioning_file_pruning_acceptance.py",
+    "scripts/tests/test_partitioning_file_pruning_acceptance.py",
+    "docs/status.md",
 }
 
 
@@ -1949,6 +1973,100 @@ def assert_final_evidence_manifest(
         raise AcceptanceError(f"partition benchmark cleanup is incomplete: {mismatches}")
 
 
+def assert_catalog_object_evidence(
+    table_rows: Sequence[Sequence[str]],
+    polaris_tables: Mapping[str, Any],
+    objects: Mapping[str, Any],
+    *,
+    schema: str,
+    data_files: Mapping[str, int],
+) -> dict[str, Any]:
+    """Bind eight Trino/Polaris registrations to every layout's S3 files."""
+    tables = {f"{dataset}_{layout}" for dataset in DATASETS for layout in LAYOUTS}
+    expected_rows = [["table_schema", "table_name"], *[
+        [schema, table] for table in sorted(tables)
+    ]]
+    if list(map(list, table_rows)) != expected_rows:
+        raise AcceptanceError("expected exact eight-table Trino registration")
+    identifiers = polaris_tables.get("identifiers")
+    if (
+        polaris_tables.get("next-page-token") not in (None, "")
+        or not isinstance(identifiers, list)
+        or len(identifiers) != 8
+        or any(
+            not isinstance(item, dict)
+            or item.get("namespace") != [schema]
+            or item.get("name") not in tables
+            for item in identifiers
+        )
+        or {item["name"] for item in identifiers} != tables
+    ):
+        raise AcceptanceError("expected exact eight-table Polaris registration")
+
+    prefix = f"warehouse/{schema}/"
+    contents = objects.get("Contents")
+    if objects.get("Prefix") != prefix or not isinstance(contents, list) or not contents:
+        raise AcceptanceError("invalid or empty task object listing")
+    keys: dict[str, int] = {}
+    roots: dict[str, set[str]] = {table: set() for table in tables}
+    suffixes: dict[str, set[str]] = {table: set() for table in tables}
+    for item in contents:
+        if not isinstance(item, dict):
+            raise AcceptanceError("invalid task object entry")
+        key, size = item.get("Key"), item.get("Size")
+        if (
+            not isinstance(key, str) or not key.startswith(prefix)
+            or type(size) is not int or size <= 0 or key in keys
+        ):
+            raise AcceptanceError("invalid, duplicate or foreign task object")
+        relative = key[len(prefix):]
+        match = re.fullmatch(r"([a-z]+_(?:u|d|r|dr))-[^/]+/((?:data|metadata)/.+)", relative)
+        if not match or match[1] not in tables:
+            raise AcceptanceError("unexpected task table object location")
+        table, tail = match[1], match[2]
+        roots[table].add(relative.split("/", 1)[0])
+        for suffix in (".parquet", ".metadata.json", ".avro"):
+            if tail.endswith(suffix):
+                suffixes[table].add(suffix)
+        keys[key] = size
+    if any(
+        len(roots[table]) != 1
+        or suffixes[table] != {".parquet", ".metadata.json", ".avro"}
+        for table in tables
+    ):
+        raise AcceptanceError("each of eight tables needs one root and data/metadata/manifests")
+    actual_data = {key: size for key, size in keys.items() if key.endswith(".parquet")}
+    if not data_files or actual_data != dict(data_files):
+        raise AcceptanceError("RustFS data files differ from exact Iceberg file inventory")
+    return {"tables": sorted(tables), "object_count": len(keys), "data_file_count": len(actual_data)}
+
+
+def assert_boundary_unchanged(before: Mapping[str, Any], after: Mapping[str, Any]) -> None:
+    """Do not treat missing captures or an empty fingerprint set as evidence."""
+    if not before or before.keys() != after.keys() or before != after:
+        raise AcceptanceError("immutable/runtime boundary changed or is missing")
+
+
+def assert_manifest_files(manifest: Mapping[str, Any], evidence_dir: Path) -> None:
+    """Check actual final evidence bytes, not merely plausible hash strings."""
+    root = evidence_dir.resolve()
+    listed = set()
+    for entry in manifest["files"]:
+        path = root / entry["path"]
+        if not path.resolve().is_relative_to(root) or not path.is_file():
+            raise AcceptanceError("manifest path is missing or outside evidence directory")
+        data = path.read_bytes()
+        if len(data) != entry["size"] or hashlib.sha256(data).hexdigest() != entry["sha256"]:
+            raise AcceptanceError(f"manifest content mismatch: {entry['path']}")
+        listed.add(entry["path"])
+    actual = {
+        str(path.relative_to(root)) for path in root.rglob("*")
+        if path.is_file() and path.name not in {"acceptance_summary.json", "evidence_manifest.json"}
+    }
+    if listed != actual:
+        raise AcceptanceError("manifest does not cover exact final evidence file set")
+
+
 class PartitioningFilePruningAcceptanceRun(AcceptanceRun):
     """Lifecycle and safety boundary for the partition benchmark slice."""
 
@@ -1965,6 +2083,64 @@ class PartitioningFilePruningAcceptanceRun(AcceptanceRun):
             for layout in LAYOUTS
         )
         self.task_object_inventory: dict[str, Any] = {"Contents": []}
+        self.immutable_before: dict[str, Any] = {}
+        self.runtime_before: dict[str, Any] = {}
+        self.isolation_verified = False
+        self.catalog_evidence_captured = False
+        self.environment_restored = False
+
+    def preflight(self) -> None:
+        super().preflight()
+        self.immutable_before = self.capture_immutable_boundary()
+        self.write_json("preflight/immutable_before.json", self.immutable_before)
+
+    def capture_immutable_boundary(self) -> dict[str, Any]:
+        changed = self.capture(["git", "diff", "--name-only", "HEAD"], None).stdout.splitlines()
+        untracked = self.capture(
+            ["git", "ls-files", "--others", "--exclude-standard"], None
+        ).stdout.splitlines()
+        unexpected = (set(changed) | set(untracked)) - MUTABLE_TASK_PATHS
+        if unexpected:
+            raise AcceptanceError(f"completed/shared paths changed: {sorted(unexpected)}")
+        tracked = self.capture(["git", "ls-files"], None).stdout.splitlines()
+        fingerprints = {
+            name: hashlib.sha256((ROOT / name).read_bytes()).hexdigest()
+            for name in tracked if name not in MUTABLE_TASK_PATHS
+        }
+        if not fingerprints:
+            raise AcceptanceError("immutable fingerprint set is empty")
+        head = self.capture(["git", "rev-parse", "HEAD"], None).stdout.strip()
+        return {"head": head, "sha256": fingerprints}
+
+    def capture_runtime_boundary(self, stage: str) -> dict[str, Any]:
+        base = f"runtime/boundary_{stage}"
+        schemas = self.query_csv(
+            f"{base}/schemas.csv",
+            "SELECT schema_name FROM lakehouse.information_schema.schemata "
+            f"WHERE schema_name <> '{self.benchmark_schema}' ORDER BY schema_name",
+        )
+        tables = self.query_csv(
+            f"{base}/tables.csv",
+            "SELECT table_schema, table_name, table_type FROM lakehouse.information_schema.tables "
+            f"WHERE table_schema <> '{self.benchmark_schema}' ORDER BY table_schema, table_name",
+        )
+        listing = self.list_objects("warehouse/")
+        contents = listing.get("Contents", [])
+        if not isinstance(contents, list):
+            raise AcceptanceError("invalid boundary object listing")
+        objects = {}
+        for item in contents:
+            key, size, etag = item.get("Key"), item.get("Size"), item.get("ETag")
+            if (
+                not isinstance(key, str) or not key.startswith("warehouse/")
+                or type(size) is not int or size < 0 or not isinstance(etag, str)
+                or key in objects
+            ):
+                raise AcceptanceError("invalid boundary object entry")
+            if not key.startswith(f"warehouse/{self.benchmark_schema}/"):
+                objects[key] = {"size": size, "etag": etag}
+        self.write_json(f"{base}/objects.json", objects)
+        return {"schemas": schemas, "tables": tables, "objects": objects}
 
     def run(self) -> None:
         self.preflight()
@@ -1974,10 +2150,15 @@ class PartitioningFilePruningAcceptanceRun(AcceptanceRun):
             self.assert_stack_state()
             self.assert_query_ready()
             self.assert_prefixes_absent()
+            self.runtime_before = self.capture_runtime_boundary("before")
             self.prefixes_owned = True
             self.run_partitioning_file_pruning_workflow()
             self.cleanup_task_data()
             self.data_cleaned = True
+            runtime_after = self.capture_runtime_boundary("after")
+            assert_boundary_unchanged(self.runtime_before, runtime_after)
+            self.isolation_verified = True
+            self.write_json("runtime/isolation.json", {"unchanged": True})
         except Exception as caught:  # cleanup must run after ownership is established
             error = caught
         finally:
@@ -2020,6 +2201,10 @@ class PartitioningFilePruningAcceptanceRun(AcceptanceRun):
         if error is not None:
             raise error
 
+    def assert_environment_restored(self) -> None:
+        super().assert_environment_restored()
+        self.environment_restored = True
+
     def assert_prefixes_absent(self) -> None:
         rows = self.query_csv(
             "preflight/existing_schemas.csv",
@@ -2030,12 +2215,21 @@ class PartitioningFilePruningAcceptanceRun(AcceptanceRun):
             raise AcceptanceError(
                 f"benchmark schema already exists: {self.benchmark_schema}"
             )
+        objects = self.list_objects(f"warehouse/{self.benchmark_schema}/")
+        self.write_json("preflight/existing_objects.json", objects)
+        if objects.get("Contents"):
+            raise AcceptanceError("benchmark object prefix already exists")
 
     def run_partitioning_file_pruning_workflow(self) -> None:
         self.execute_sql(
             "generation/create_schema.log",
             f'CREATE SCHEMA "{CATALOG}"."{self.benchmark_schema}"',
         )
+        # Probe the REST read path before the expensive generation/workload.
+        empty_tables = self.fetch_polaris_tables()
+        self.write_json("generation/empty_polaris_tables.json", empty_tables)
+        if empty_tables.get("identifiers") != [] or empty_tables.get("next-page-token"):
+            raise AcceptanceError("new Polaris benchmark namespace is not empty")
         mapping_rows = self.query_csv(
             "generation/route_mapping.csv",
             route_mapping_sql(),
@@ -2253,10 +2447,7 @@ class PartitioningFilePruningAcceptanceRun(AcceptanceRun):
         matrix = assert_causal_evidence_matrix(self.evidence_dir, schema=self.benchmark_schema)
         self.write_json("workload/causal_matrix.json", matrix)
         self.ac_results["AC-026"] = "PASS"
-        raise AcceptanceError(
-            "partitioning/file-pruning catalog evidence and finalization are incomplete: "
-            "continue with PF-IMP-006"
-        )
+        self.capture_catalog_and_object_evidence()
 
     def run_balanced_workload(self, route_id: str, route_bucket: int) -> None:
         cases: dict[str, Any] = {}
@@ -2524,6 +2715,68 @@ class PartitioningFilePruningAcceptanceRun(AcceptanceRun):
             FROM checked
         """
 
+    def fetch_polaris_tables(self) -> dict[str, Any]:
+        """Read the task namespace via the Iceberg REST API; never persist tokens."""
+        port = self.capture(
+            ["docker", "compose", "port", "polaris", "8181"], None
+        ).stdout.strip().rsplit(":", 1)[-1]
+        base_url = f"http://127.0.0.1:{port}/api/catalog/v1"
+        credentials = f"{os.environ['POLARIS_CLIENT_ID']}:{os.environ['POLARIS_CLIENT_SECRET']}"
+        token_request = urllib.request.Request(
+            f"{base_url}/oauth/tokens",
+            data=urllib.parse.urlencode({"grant_type": "client_credentials", "scope": "PRINCIPAL_ROLE:ALL"}).encode(),
+            headers={
+                "Authorization": f"Basic {base64.b64encode(credentials.encode()).decode()}",
+                "Polaris-Realm": "POLARIS",
+                "Content-Type": "application/x-www-form-urlencoded",
+            },
+        )
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        try:
+            with opener.open(token_request, timeout=20) as response:
+                token = json.load(response)["access_token"]
+            request = urllib.request.Request(
+                f"{base_url}/{CATALOG}/namespaces/{self.benchmark_schema}/tables",
+                headers={"Authorization": f"Bearer {token}", "Polaris-Realm": "POLARIS"},
+            )
+            with opener.open(request, timeout=20) as response:
+                return json.load(response)
+        except (urllib.error.URLError, KeyError, json.JSONDecodeError) as error:
+            raise AcceptanceError(f"Polaris table evidence request failed: {error}") from error
+
+    def capture_catalog_and_object_evidence(self) -> None:
+        rows = self.query_csv(
+            "runtime/catalog_tables.csv",
+            "SELECT table_schema, table_name FROM lakehouse.information_schema.tables "
+            f"WHERE table_schema = '{self.benchmark_schema}' ORDER BY table_schema, table_name",
+        )
+        catalog = self.fetch_polaris_catalog()
+        self.write_json("runtime/polaris_catalog.json", catalog)
+        if catalog.get("catalog", catalog).get("name") != CATALOG:
+            raise AcceptanceError("Polaris did not return the expected catalog")
+        polaris_tables = self.fetch_polaris_tables()
+        self.write_json("runtime/polaris_tables.json", polaris_tables)
+        objects = self.list_objects(f"warehouse/{self.benchmark_schema}/")
+        self.write_json("runtime/object_paths.json", objects)
+        data_files = {}
+        for dataset in DATASETS:
+            for layout in LAYOUTS:
+                path = self.evidence_dir / f"layouts/{dataset}/{layout}/files.csv"
+                with path.open(encoding="utf-8", newline="") as source:
+                    for row in csv.DictReader(source):
+                        anchor = f"s3://{BUCKET}/"
+                        if not row["file_path"].startswith(anchor):
+                            raise AcceptanceError("foreign data-file bucket")
+                        key = row["file_path"][len(anchor):]
+                        if key in data_files:
+                            raise AcceptanceError("duplicate Iceberg data file")
+                        data_files[key] = parse_int(row["file_size_in_bytes"], "data file size")
+        summary = assert_catalog_object_evidence(
+            rows, polaris_tables, objects, schema=self.benchmark_schema, data_files=data_files
+        )
+        self.write_json("runtime/end_to_end.json", summary)
+        self.catalog_evidence_captured = True
+
     def delete_owned_object_keys(self, keys: Sequence[str]) -> None:
         """Delete only exact task-owned residual keys in AWS API batches."""
         batch_size = 1000
@@ -2629,6 +2882,51 @@ class PartitioningFilePruningAcceptanceRun(AcceptanceRun):
             raise AcceptanceError(
                 "task object paths remain after benchmark schema cleanup"
             )
+
+    def finalize(self, error: Exception | None) -> Exception | None:
+        """Never promote pending ACs through the shared runner's blanket PASS."""
+        try:
+            self.assert_no_secrets_in_evidence()
+            if error is not None:
+                raise error
+            pending = [ac for ac in PARTITIONING_FILE_PRUNING_ACS[1:-1] if self.ac_results[ac] != "PASS"]
+            if pending:
+                raise AcceptanceError(f"pending behavior checks: {pending}")
+            if not all((self.catalog_evidence_captured, self.data_cleaned,
+                        self.environment_restored, self.isolation_verified)):
+                raise AcceptanceError("catalog/cleanup/restoration/isolation gate is incomplete")
+            immutable_after = self.capture_immutable_boundary()
+            self.write_json("runtime/immutable_after.json", immutable_after)
+            assert_boundary_unchanged(self.immutable_before, immutable_after)
+            with (self.evidence_dir / "cleanup/remaining_schemas.csv").open(newline="") as source:
+                schemas = list(csv.reader(source))
+            objects = json.loads((self.evidence_dir / "cleanup/remaining_objects.json").read_text())
+            environment = json.loads((self.evidence_dir / "cleanup/environment.json").read_text())
+            cleanup = {
+                "schema_absent": schemas == [["schema_name"]],
+                "final_prefix_empty": not objects.get("Contents"),
+                "preexisting_volumes_preserved": environment.get("preexisting_volumes_preserved") is True,
+                "final_compose_state": "stopped" if environment.get("final_project_containers") == [] else "unknown",
+            }
+            # The final boundary commands must also be scanned and hashed.
+            self.assert_no_secrets_in_evidence()
+            self.write_evidence_manifest()
+            manifest = json.loads((self.evidence_dir / "evidence_manifest.json").read_text())
+            assert_final_evidence_manifest(manifest, cleanup=cleanup)
+            assert_manifest_files(manifest, self.evidence_dir)
+            self.ac_results["AC-021"] = self.ac_results["AC-027"] = "PASS"
+            self.write_summary("PASS", None)
+            return None
+        except Exception as finalization_error:
+            if error is None:
+                error = finalization_error
+            self.ac_results["AC-021"] = self.ac_results["AC-027"] = "NOT_RUN"
+        try:
+            self.write_summary("FAIL", f"{type(error).__name__}: {error}")
+            self.write_evidence_manifest()
+        except Exception:
+            pass  # Preserve the primary failure; never manufacture a PASS.
+        return error
 
     def write_summary(self, outcome: str, error: str | None) -> None:
         self.write_json_atomic(
