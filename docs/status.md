@@ -1784,3 +1784,38 @@ PF-IMP-005 is complete and committed as `0d3324a`.
 
 ### Completion
 PF-IMP-006 is complete and committed as `88fc7db`. The partitioning/file-pruning slice is complete; final acceptance `pfimp006_final` records AC-021–AC-027 PASS.
+
+## TASK_ID: TT-AGENT-001
+
+- Source: [Time travel bootstrap plan](bootstrap-time-travel.md) §5, row “TT-AGENT-001 — работа агента”; [approved specification](spec.md) §12 (TT-1, DEC-034–DEC-040, AC-028–AC-033).
+- Status: REVIEW_READY
+- Updated: 2026-11-01T17:35:41+03:00
+- Baseline HEAD: ca04d3915ac875f10cd7ab31ce10e62a03006a86
+
+### Progress
+- Implemented: retained the spec/plan navigation links and registered only TT-AGENT-001 in the existing status file. The current Time travel contract is approved TT-1 in spec §12; the bootstrap plan supplies task boundaries. Earlier “next slice not selected” statements above are historical and do not override these sources. Navigation, uniqueness, append-only scope and three in-memory negative mutations passed. No new agent resources, instructions, journals, dependencies or global settings were created/changed. No Docker, SQL, builds or acceptance commands were invoked; service/volume state was not inspected or managed.
+- Remaining: none within TT-AGENT-001. TT-ENV/TT-IMP/TT-DOC work, runtime acceptance, branches/tags, maintenance and full AC-002 coverage are outside this task.
+
+### AC evidence
+| AC / ссылка на источник | Result | Проверка / evidence / причина |
+|---|---|---|
+| `docs/bootstrap-time-travel.md` §5 TT-AGENT-001, retain spec/plan links and use existing status file | PASS | fast: inline `python3` navigation/scope assertion exited 0 (0.019 seconds): both relative links resolve within the repository; the exact task heading occurs once and no other task was appended. In-memory duplicate-heading and broken-link mutations were rejected. |
+| `docs/bootstrap-time-travel.md` §5 TT-AGENT-001, no new global instructions/duplicate journals; preserve old entries | PASS | fast: the same assertion compared every original byte with `git show ca04d3915ac875f10cd7ab31ce10e62a03006a86:docs/status.md` (original SHA-256 `4db0ccb79fdecbd9fdfa0178dc94ade1fff5729d4b6759ccd628c8de9c48b2e2`); prior-history mutation rejected. `git diff --name-only` reports only `docs/status.md`; staged/untracked lists are empty; spec/plan hashes match PRECHECK; `git diff --check` exited 0. No global settings commands were used. Active LSP probe for this Markdown path returned clean=1, zero diagnostics; the earlier post-write silent-server warning was not treated as clean evidence. |
+| `docs/spec.md` §12.9 AC-028 | NOT_RUN | Full exercise isolation is outside this agent-navigation task; no runtime actions are planned. |
+| `docs/spec.md` §12.9 AC-029 | NOT_RUN | Historical queries belong to later TT implementation tasks, not TT-AGENT-001. |
+| `docs/spec.md` §12.9 AC-030 | NOT_RUN | Rollback belongs to later TT implementation tasks, not TT-AGENT-001. |
+| `docs/spec.md` §12.9 AC-031 | NOT_RUN | Negative SQL operations belong to later TT implementation tasks, not TT-AGENT-001. |
+| `docs/spec.md` §12.9 AC-032 | NOT_RUN | Staged source builds belong to later TT implementation tasks, not TT-AGENT-001. |
+| `docs/spec.md` §12.9 AC-033 | NOT_RUN | End-to-end evidence, runtime cleanup and lifecycle acceptance belong to later TT tasks. |
+
+### Issues
+none
+
+### Review
+- Verdict: OK
+- Calls: 1
+- Fix iterations: 0
+- Details: one fresh builtin read-only reviewer (read, grep, find, ls, watchdog_diff, contact_supervisor; no bash/write/edit; effective capabilities inspected) reviewed the complete 35-line append-only diff, spec/plan task boundaries, this section, prior-section preservation and AC evidence. VERDICT OK; no BLOCKER, DEFERRED or IMPROVEMENT. Python assertions, hashes, LSP and Git checks were supervisor evidence, not independently executed by the reviewer. Post-review SHA-256 matched the pre-review file; only permitted status/time/review/next-action finalization follows.
+
+### Next action
+User: inspect and approve the docs/status.md-only checkpoint; proposed commit message: `docs: record TT-AGENT-001 navigation and status`. No staging/commit or transition to another task has been performed.
