@@ -1,5 +1,37 @@
 # Task status
 
+## Current project state
+
+- Reconciled: **2026-11-01**, against Git history through `88fc7db` and retained acceptance summaries.
+- **Three slices are implemented, reviewed, and committed. All 31 recorded tasks are DONE.**
+- Full-project completion is **not** claimed: dedicated time-travel and maintenance exercises, plus full learning-outcome coverage (AC-002), remain open.
+- This update changes documentation only. It does not rerun Docker acceptance, select a next slice, or perform a commit or push.
+
+| Completed slice | Recorded tasks | Final acceptance | Completion commit |
+|---|---|---|---|
+| Core lakehouse | PROBE-001–003, BOOT-ENV-001–003, IMP-001–007 (13) | `imp007_final5`: PASS, 2026-10-29; AC-001 and AC-003–AC-012 | `82b89ab` |
+| Schema evolution | SE-AGENT-001, SE-ENV-001, SE-IMP-001–006 (8) | `seimp006_final2`: PASS, 2026-10-30; AC-013–AC-020 | `25ff57e` |
+| Partitioning / file pruning | PART-PROBE-001–002, PF-ENV-001–002, PF-IMP-001–006 (10) | `pfimp006_final`: PASS, 2026-11-01; AC-021–AC-027 | `88fc7db` |
+
+### Evidence and verification
+
+- Final summaries are retained locally at `artifacts/acceptance/<run-id>/acceptance_summary.json` for the three run IDs above. These directories are Git-ignored and are not supplied by a fresh clone.
+- All three summaries record `outcome=PASS`, `error=null`, and PASS for every AC assigned to their slice. Earlier intentionally incomplete checkpoint runs remain historical evidence, not overall slice PASS.
+- The partitioning/pruning helper suite was rechecked on 2026-11-01: `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/tests -v` — **54/54 PASS**, without Docker.
+- Detailed runtime, cleanup, review, and diagnostic limitations remain in the task records below; they are not replaced by a claim of fresh end-to-end verification.
+- The local `.env` workflow is committed in `2e5ad98`; create an untracked root `.env` from `.env.example` before running the documented workflows.
+
+### Remaining scope and next action
+
+- Specify and implement a dedicated time-travel slice beyond the completed S0/S1 schema-compatibility checks. Those historical reads do not constitute the broader timestamp/branches/tags/rollback exercise.
+- Specify and implement maintenance exercises: small-files diagnostics/remediation, snapshot expiration, orphan-file cleanup, and compaction.
+- Complete the full learning-outcome traceability matrix and AC-002 after the remaining exercises.
+- Next action: the user selects the next bounded slice. No implementation task is currently recorded as active or blocked.
+
+### Task-history conventions
+
+`Status` and `Completion` below are reconciled with committed history as of the date above; obsolete pending-commit instructions have been replaced with actual completion commits. The original `Updated` timestamps, `Baseline HEAD`, Progress, AC evidence, Issues, and Review entries describe their historical checkpoints and are preserved, including intermediate continuation gates, resolved issues, and review counters. A task marked DONE means its bounded work was completed and committed, not that its intermediate run covered the entire project. Non-blocking historical review suggestions are not silently treated as implemented.
+
 ## TASK_ID: PROBE-001
 
 - Source: `docs/bootstrap.md`, section 4.4, “PROBE-001 — совместимость pinned stack”
@@ -52,8 +84,8 @@
 - Fix iterations: 1
 - Details: the first fresh read-only reviewer returned `VERDICT OK` for the pinned-stack evidence, scope, cleanup, temporary configuration, and repository diff, with one non-blocking editorial synchronization improvement. After the status-only fix, a second fresh targeted reviewer found no BLOCKER, DEFERRED, or IMPROVEMENT and returned `VERDICT OK`.
 
-### Next action
-User authorized staging and committing this reviewed checkpoint; no push or transition to another task is authorized.
+### Completion
+PROBE-001 is complete and committed as `0fe79f1`.
 
 ## TASK_ID: PROBE-002
 
@@ -117,8 +149,8 @@ User authorized staging and committing this reviewed checkpoint; no push or tran
 - Fix iterations: 0
 - Details: one fresh read-only reviewer inspected the full tracked/untracked diff, every new file including the hash lock, `docs/status.md`, the PROBE-001 section boundary, source AC, and supplied runtime evidence; it found no BLOCKER or IMPROVEMENT and returned `VERDICT OK`. DEFERRED: BOOT-ENV-002 must persist `polaris.config.drop-with-purge.enabled=true` and verify two consecutive table materializations; the reviewer confirmed this is not a PROBE-002 blocker.
 
-### Next action
-After committing this user-authorized reviewed checkpoint, await separate authorization for push or transition to another task.
+### Completion
+PROBE-002 is complete and committed as `af47c52`.
 
 ## TASK_ID: PROBE-003
 
@@ -147,8 +179,8 @@ none
 - Fix iterations: 0
 - Details: one fresh read-only reviewer inspected the complete tracked/untracked diff, source contracts, macro, singular test, runtime and mutation evidence, status consistency, and unchanged PROBE-001/002 sections; it found no BLOCKER, DEFERRED, or IMPROVEMENT and returned `VERDICT OK`.
 
-### Next action
-User authorized staging and committing this reviewed checkpoint; no push or transition to another task is authorized.
+### Completion
+PROBE-003 is complete and committed as `527f473`.
 
 ## TASK_ID: BOOT-ENV-001
 
@@ -193,8 +225,8 @@ User authorized staging and committing this reviewed checkpoint; no push or tran
 - Fix iterations: 0
 - Details: one fresh read-only reviewer inspected the complete tracked/untracked diff, all of `compose.yaml`, the BOOT-ENV-001 source and status section, unchanged prior task sections, supplied runtime/config/mutation/cleanup evidence, scope boundaries, resource limits, credentials handling, and compatibility with BOOT-ENV-002/004; it found no BLOCKER, DEFERRED, or IMPROVEMENT and returned `VERDICT OK`.
 
-### Next action
-User reviews the checkpoint and, if accepted, stages and commits `compose.yaml` and `docs/status.md`; no push or next-task transition is authorized.
+### Completion
+BOOT-ENV-001 is complete and committed as `540fc19`.
 
 ## TASK_ID: BOOT-ENV-002
 
@@ -275,8 +307,8 @@ User reviews the checkpoint and, if accepted, stages and commits `compose.yaml` 
 - Fix iterations: 0
 - Details: one fresh read-only reviewer inspected the complete tracked/untracked diff, all three new infrastructure files, source contracts, final runtime/listing/cleanup evidence, the BOOT-ENV-002 status section, and unchanged prior task sections; it found no BLOCKER or DEFERRED and returned `VERDICT OK`. IMPROVEMENT: on a reused nonconforming existing `lakehouse` catalog, the bootstrap currently accepts HTTP 200 without revalidating all mandatory catalog/storage properties; the reviewer confirmed this does not block the clean-stack acceptance proven for this task.
 
-### Next action
-User reviews the checkpoint and, if accepted, stages and commits `compose.yaml`, `infra/rustfs/create-bucket.sh`, `infra/polaris/bootstrap.sh`, `infra/trino/catalog/lakehouse.properties`, and `docs/status.md`; no push or next-task transition is authorized.
+### Completion
+BOOT-ENV-002 is complete and committed as `f1e121a`.
 
 ## TASK_ID: BOOT-ENV-003
 
@@ -340,8 +372,8 @@ User reviews the checkpoint and, if accepted, stages and commits `compose.yaml`,
 - Fix iterations: 2
 - Details: the first fresh reviewer returned `VERDICT OK` before B03 correction. The second fresh reviewer returned `VERDICT BLOCK` for stale `Next action`; after the targeted status fix, the third fresh reviewer inspected the complete corrected section and diff, found no BLOCKER, DEFERRED, or IMPROVEMENT, and returned `VERDICT OK`.
 
-### Next action
-User reviews the checkpoint and, if accepted, stages and commits `docs/status.md`; no push or next-task transition is authorized.
+### Completion
+BOOT-ENV-003 is complete and committed as `7f86432`.
 
 ## TASK_ID: IMP-001
 
@@ -406,8 +438,8 @@ User reviews the checkpoint and, if accepted, stages and commits `docs/status.md
 - Fix iterations: 0
 - Details: one fresh read-only reviewer inspected the complete tracked/untracked diff, all three new files, source contracts, runtime/mutation/cleanup evidence, the IMP-001 status section, and unchanged prior task sections; it found no BLOCKER, DEFERRED, or IMPROVEMENT and returned `VERDICT OK`.
 
-### Next action
-User reviews the checkpoint and, if accepted, stages and commits `dbt/dbt_project.yml`, `dbt/macros/generate_schema_name.sql`, `dbt/models/fixtures/sources.yml`, `dbt/tests/assert_schema_naming_convention.sql`, and `docs/status.md`; no push or next-task transition is authorized.
+### Completion
+IMP-001 is complete and committed as `5da246f`.
 
 ## TASK_ID: IMP-002
 
@@ -471,8 +503,8 @@ User reviews the checkpoint and, if accepted, stages and commits `dbt/dbt_projec
 - Fix iterations: 1
 - Details: the first fresh read-only reviewer inspected the complete tracked/untracked diff and source contracts and returned `VERDICT OK`. After the status-only correction, the second fresh targeted reviewer confirmed the corrected section and returned `VERDICT OK`. IMPROVEMENT: exact tuple assertions for the four P3 late-event payloads would harden future fixture edits; current checked-in values are correct and this remains non-blocking.
 
-### Next action
-User reviews the checkpoint and, if accepted, stages and commits the listed IMP-002 files; no push or next-task transition is authorized.
+### Completion
+IMP-002 is complete and committed as `5e80c08`.
 
 ## TASK_ID: IMP-003
 
@@ -535,8 +567,8 @@ User reviews the checkpoint and, if accepted, stages and commits the listed IMP-
 - Fix iterations: 2
 - Details: the first fresh reviewer returned `VERDICT BLOCK` for B02/B03. The second fresh reviewer confirmed the targeted code/test fixes and final evidence with `VERDICT OK`. After the status-only B04 correction, the third fresh targeted reviewer verified the complete diff, corrected section, counters, evidence, and unchanged prior task sections; it found no BLOCKER, DEFERRED, or IMPROVEMENT and returned `VERDICT OK`.
 
-### Next action
-User reviews the checkpoint and, if accepted, stages and commits the IMP-003 files plus `docs/status.md`; no push or transition to another task is authorized.
+### Completion
+IMP-003 is complete and committed as `a09dd66`.
 
 ## TASK_ID: IMP-004
 
@@ -588,8 +620,8 @@ User reviews the checkpoint and, if accepted, stages and commits the IMP-003 fil
 - Fix iterations: 0
 - Details: one fresh read-only reviewer inspected the complete tracked/untracked diff, source contracts, implementation, tests, final runtime/mutation/cleanup evidence, the IMP-004 status section, and unchanged prior task sections; it found no BLOCKER or DEFERRED and returned `VERDICT OK`. IMPROVEMENT: add exact six-checkpoint tuple coverage plus `(route_version_id, checkpoint_seq)` duplicate detection in a future hardening change; the reviewer confirmed the checked-in fixtures and current AC-003 evidence are correct, so this is non-blocking.
 
-### Next action
-User reviews the checkpoint and, if accepted, stages and commits the IMP-004 files plus `docs/status.md`; no push or transition to another task is authorized.
+### Completion
+IMP-004 is complete and committed as `ab4cbf0`.
 
 ## TASK_ID: IMP-005
 
@@ -681,8 +713,8 @@ User reviews the checkpoint and, if accepted, stages and commits the IMP-004 fil
 - Fix iterations: 2
 - Details: the first fresh reviewer returned `VERDICT: BLOCK` for B04. After targeted fix iteration 1, the second fresh reviewer confirmed the corrected code, tests, evidence, scope, and status preservation with `VERDICT: OK`. After the required status-only B07 correction, the third fresh targeted reviewer verified the complete diff and corrected status section, found no BLOCKER, DEFERRED, or IMPROVEMENT, and returned `VERDICT: OK`.
 
-### Next action
-IMP-005 is complete and committed as `345be2c`; await separate authorization for push or transition to IMP-006.
+### Completion
+IMP-005 is complete and committed as `345be2c`.
 
 ## TASK_ID: IMP-006
 
@@ -753,8 +785,8 @@ IMP-005 is complete and committed as `345be2c`; await separate authorization for
 - Fix iterations: 1
 - Details: the first fresh read-only reviewer inspected the complete implementation/status diff and returned `VERDICT: OK` with no BLOCKER or DEFERRED. After the required Progress correction, the second fresh targeted reviewer confirmed the complete corrected diff, evidence, counters, and unchanged prior task sections with `VERDICT: OK`. IMPROVEMENT: make the Gold reconciliation test independently validate that duplicated event IDs have one payload fingerprint; the existing Silver conflict test and full 128-node build already enforce this, so it is non-blocking.
 
-### Next action
-User authorized staging and committing this reviewed checkpoint; no push or transition to IMP-007 is authorized.
+### Completion
+IMP-006 is complete and committed as `64b2ecc`.
 
 ## TASK_ID: IMP-007
 
@@ -852,13 +884,13 @@ User authorized staging and committing this reviewed checkpoint; no push or tran
 - Fix iterations: 2
 - Details: the first fresh reviewer returned `VERDICT: BLOCK` for B05/B06. After targeted code fixes and final acceptance, the second fresh reviewer returned `VERDICT: OK` with no findings. The third fresh targeted reviewer verified the B07 status-only correction and unchanged implementation diff, found no issues, and returned `VERDICT: OK`.
 
-### Next action
-After the user-authorized checkpoint commit, await separate authorization for push or transition to another task.
+### Completion
+IMP-007 is complete and committed as `82b89ab`. The core acceptance workflow is complete.
 
 ## TASK_ID: SE-AGENT-001
 
 - Source: `docs/bootstrap-schema-evolution.md` §5.1, “SE-AGENT-001 — сохранить текущие инструкции и ресурсы”
-- Status: REVIEW_READY
+- Status: DONE
 - Updated: 2026-10-29T22:59:30+03:00
 - Baseline HEAD: 6d74963e098647c3191c039ffadc667cee020c9c
 
@@ -888,13 +920,13 @@ After the user-authorized checkpoint commit, await separate authorization for pu
 - Fix iterations: 1
 - Details: the first fresh read-only reviewer inspected the complete diff, source criterion, status evidence, forbidden-resource paths, and preservation of prior sections and returned `VERDICT OK` with no findings. After the B01 status correction, the second fresh targeted reviewer verified the corrected section and full diff, found no BLOCKER, DEFERRED, or IMPROVEMENT, and returned `VERDICT OK`.
 
-### Next action
-User reviews the checkpoint and, if accepted, stages and commits `docs/status.md`; no push or transition to another task is authorized.
+### Completion
+SE-AGENT-001 is complete and committed as `6579860`.
 
 ## TASK_ID: SE-ENV-001
 
 - Source: `docs/bootstrap-schema-evolution.md` §5.2, “SE-ENV-001 — schema-evolution acceptance entry point”
-- Status: REVIEW_READY
+- Status: DONE
 - Updated: 2026-10-29T23:07:59+03:00
 - Baseline HEAD: 65798603483a5e5d56d419004358022b09c00de9
 
@@ -925,13 +957,13 @@ User reviews the checkpoint and, if accepted, stages and commits `docs/status.md
 - Fix iterations: 1
 - Details: the first fresh read-only reviewer inspected the complete tracked/untracked diff, implementation, source contracts, safety/evidence behavior and status preservation and returned `VERDICT OK`. After the B01 status correction, the second fresh targeted reviewer verified the full current diff and corrected section, found no BLOCKER, DEFERRED or IMPROVEMENT, and returned `VERDICT OK`.
 
-### Next action
-User reviews the checkpoint and, if accepted, stages and commits `scripts/run_schema_evolution_acceptance.py` and `docs/status.md`; no push or transition to another task is authorized.
+### Completion
+SE-ENV-001 is complete and committed as `69678d5`.
 
 ## TASK_ID: SE-IMP-001
 
 - Source: `docs/bootstrap-schema-evolution.md` §5.3, “SE-IMP-001 — pre/post core regression capture”; `docs/spec.md` AC-013 and AC-020
-- Status: REVIEW_READY
+- Status: DONE
 - Updated: 2026-10-29T23:22:30+03:00
 - Baseline HEAD: 69678d54758aa4b5e485255d09baeb2a0353a88d
 
@@ -961,13 +993,13 @@ User reviews the checkpoint and, if accepted, stages and commits `scripts/run_sc
 - Fix iterations: 0
 - Details: one fresh read-only reviewer inspected the complete two-file diff, task contracts, implementation, saved acceptance evidence, lifecycle/cleanup behavior, the SE-IMP-001 status section, and preservation of prior sections; it found no BLOCKER, DEFERRED, or IMPROVEMENT and returned `VERDICT OK`.
 
-### Next action
-User reviews the checkpoint and, if accepted, stages and commits `scripts/run_schema_evolution_acceptance.py` and `docs/status.md`; no push or transition to SE-IMP-002 is authorized.
+### Completion
+SE-IMP-001 is complete and committed as `44addd7`.
 
 ## TASK_ID: SE-IMP-002
 
 - Source: `docs/bootstrap-schema-evolution.md` §5.3, “SE-IMP-002 — S0 creation и evidence”; `docs/spec.md` AC-014 and AC-020
-- Status: REVIEW_READY
+- Status: DONE
 - Updated: 2026-10-29T23:44:32+03:00
 - Baseline HEAD: 44addd7d5263bb7d480569d19f25d1a3ad0d9847
 
@@ -1006,13 +1038,13 @@ User reviews the checkpoint and, if accepted, stages and commits `scripts/run_sc
 - Fix iterations: 0
 - Details: one fresh read-only reviewer inspected the complete two-file diff, source contracts, S0 implementation, saved `seimp002_s0b` evidence, ownership/cleanup and no-false-PASS behavior, the SE-IMP-002 status section, and preservation of prior sections; it found no BLOCKER, DEFERRED, or IMPROVEMENT and returned `VERDICT: OK`.
 
-### Next action
-User reviews the checkpoint and, if accepted, stages and commits `scripts/run_schema_evolution_acceptance.py` and `docs/status.md`; no push or transition to SE-IMP-003 is authorized.
+### Completion
+SE-IMP-002 is complete and committed as `337f51d`.
 
 ## TASK_ID: SE-IMP-003
 
 - Source: `docs/bootstrap-schema-evolution.md` §5.3, “SE-IMP-003 — metadata-only DDL checkpoints”; `docs/spec.md` AC-015 and AC-020
-- Status: REVIEW_READY
+- Status: DONE
 - Updated: 2026-10-30T00:08:59+03:00
 - Baseline HEAD: 337f51d13619069710d270dc165c57be8980ab0f
 
@@ -1051,13 +1083,13 @@ User reviews the checkpoint and, if accepted, stages and commits `scripts/run_sc
 - Fix iterations: 2
 - Details: the first fresh read-only reviewer returned `VERDICT OK` with two non-blocking status wording improvements. The second fresh targeted reviewer verified those corrections and returned `VERDICT OK`. After B02 recorded the out-of-exception Progress finalization, the third fresh targeted reviewer inspected the complete final pre-finalization section, found no BLOCKER, DEFERRED or IMPROVEMENT, and returned `VERDICT OK`.
 
-### Next action
-User reviews the checkpoint and, if accepted, stages and commits `scripts/run_schema_evolution_acceptance.py` and `docs/status.md`; no push or transition to SE-IMP-004 is authorized.
+### Completion
+SE-IMP-003 is complete and committed as `12bf88f`.
 
 ## TASK_ID: SE-IMP-004
 
 - Source: `docs/bootstrap-schema-evolution.md` §5.3, “SE-IMP-004 — reader/writer compatibility и S1”; `docs/spec.md` AC-016, AC-017 and AC-020
-- Status: REVIEW_READY
+- Status: DONE
 - Updated: 2026-10-30T00:27:58+03:00
 - Baseline HEAD: 12bf88fc065fe085f382ee72236094ae2cbd893f
 
@@ -1088,13 +1120,13 @@ User reviews the checkpoint and, if accepted, stages and commits `scripts/run_sc
 - Fix iterations: 1
 - Details: the first fresh read-only reviewer inspected the complete diff and saved evidence, found no BLOCKER or DEFERRED and returned `VERDICT OK`; it suggested hardening the old-name diagnostic and narrowing the volume wording. After the targeted fix and evidence replay, the second fresh reviewer rechecked the complete post-fix diff, final status section and saved acceptance evidence, found no issues, confirmed the evidence remained applicable, and returned `VERDICT OK`.
 
-### Next action
-User reviews the checkpoint and, if accepted, stages and commits `scripts/run_schema_evolution_acceptance.py` and `docs/status.md`; no push or transition to SE-IMP-005 is authorized.
+### Completion
+SE-IMP-004 is complete and committed as `5854963`.
 
 ## TASK_ID: SE-IMP-005
 
 - Source: `docs/bootstrap-schema-evolution.md` §5.3, “SE-IMP-005 — S0/S1 historical compatibility и narrowing”; `docs/spec.md` AC-018, AC-019 and AC-020
-- Status: REVIEW_READY
+- Status: DONE
 - Updated: 2026-10-30T11:30:10+03:00
 - Baseline HEAD: 5854963b58a5f97fd1268d7cc6c17f42394d1207
 
@@ -1179,13 +1211,13 @@ User reviews the checkpoint and, if accepted, stages and commits `scripts/run_sc
 - Fix iterations: 1
 - Details: the first fresh read-only reviewer returned `VERDICT BLOCK` for B06 and two status/plan improvements. After the targeted typed/NULL evidence fix, final acceptance and documentation corrections, the second fresh reviewer inspected the complete four-file diff and `seimp005_typed` evidence, found no BLOCKER, DEFERRED or IMPROVEMENT, and returned `VERDICT OK`.
 
-### Next action
-After this user-authorized checkpoint commit, await separate authorization for push or transition to SE-IMP-006.
+### Completion
+SE-IMP-005 is complete and committed as `55d680b`.
 
 ## TASK_ID: SE-IMP-006
 
 - Source: `docs/bootstrap-schema-evolution.md` §5.3, “SE-IMP-006 — end-to-end evidence и cleanup”; `docs/spec.md` AC-020
-- Status: REVIEW_READY
+- Status: DONE
 - Updated: 2026-10-30T12:14:44+03:00
 - Baseline HEAD: 55d680bcdfed2005e413a43a9366cc2e4e02332a
 
@@ -1214,13 +1246,13 @@ After this user-authorized checkpoint commit, await separate authorization for p
 - Fix iterations: 1
 - Details: the first fresh read-only reviewer returned `VERDICT: BLOCK` for B01. After the targeted cleanup assertion, mutation probe and fresh acceptance run, the second fresh reviewer inspected the complete corrected diff and `seimp006_final2` evidence, confirmed B01 resolution, found no BLOCKER or IMPROVEMENT, and returned `VERDICT: OK`. DEFERRED: the reviewer toolset could not independently execute Git/LSP/fast checks; the main-agent checks and saved runtime evidence cover those gates.
 
-### Next action
-User reviews the checkpoint and, if accepted, stages and commits `scripts/run_schema_evolution_acceptance.py` and `docs/status.md`; no push or transition to another slice is authorized.
+### Completion
+SE-IMP-006 is complete and committed as `25ff57e`. The schema evolution slice is complete.
 
 ## TASK_ID: PART-PROBE-001
 
 - Source: `docs/bootstrap-partitioning-file-pruning.md` §4.8, “PART-PROBE-001 — writer topology и `$files` schema”; supporting contract `docs/spec.md` §11.2–§11.7
-- Status: REVIEW_READY
+- Status: DONE
 - Updated: 2026-10-31T00:04:01+03:00
 - Baseline HEAD: 784d203887374ed1ee98ea39623941977d100f95
 
@@ -1269,13 +1301,13 @@ User reviews the checkpoint and, if accepted, stages and commits `scripts/run_sc
 - Fix iterations: 0
 - Details: one fresh read-only reviewer inspected the complete append-only tracked diff, source contract, every required ignored evidence path, manifest/hash coverage, cleanup fallback and environment restoration. It found no BLOCKER, DEFERRED or IMPROVEMENT and returned `VERDICT OK`; status-only finalization is permitted.
 
-### Next action
-User reviews the checkpoint and, if accepted, stages and commits `docs/status.md`; no push or transition to PART-PROBE-002 is authorized.
+### Completion
+PART-PROBE-001 is complete and committed as `c3470bc`.
 
 ## TASK_ID: PART-PROBE-002
 
 - Source: `docs/bootstrap-partitioning-file-pruning.md` §4.8, “PART-PROBE-002 — plan/stats capture”; supporting contract `docs/spec.md` §11.3–§11.7
-- Status: REVIEW_READY
+- Status: DONE
 - Updated: 2026-10-31T19:27:19+03:00
 - Baseline HEAD: 3f411d60361717a512cd9ef359ac8aa906a314bf
 
@@ -1351,13 +1383,13 @@ User reviews the checkpoint and, if accepted, stages and commits `docs/status.md
 - Fix iterations: 0
 - Details: one fresh read-only reviewer inspected the complete status-only diff, source AC, all 12 saved summaries, parser contract/replay, 171-file manifest, cleanup/secret evidence and neighboring status boundaries. It independently confirmed the scan/constraint/result/runtime claims, the documented Trino-484 bucket-descriptor limitation, evidence applicability without a costly rerun, current-attempt counters and preservation of other task sections; no BLOCKER, DEFERRED or IMPROVEMENT was found, and it returned `VERDICT: OK`.
 
-### Next action
-User reviews this revalidation checkpoint and, if accepted, stages and commits `docs/status.md`; no push or additional task is authorized.
+### Completion
+PART-PROBE-002 is complete and committed as `e527f1a`. Evidence revalidation is committed as `87d695d`.
 
 ## TASK_ID: PF-ENV-001
 
 - Source: `docs/bootstrap-partitioning-file-pruning.md` §5.2, “PF-ENV-001 — isolated acceptance entry point”
-- Status: REVIEW_READY
+- Status: DONE
 - Updated: 2026-10-31T01:07:03+03:00
 - Baseline HEAD: e527f1a149f2752bee2c09c2d072a0b190c44dbe
 
@@ -1397,13 +1429,13 @@ User reviews this revalidation checkpoint and, if accepted, stages and commits `
 - Fix iterations: 1
 - Details: the first fresh read-only reviewer inspected the complete tracked/untracked diff and returned `VERDICT OK` with two non-blocking DEFERRED notes. After the required `Progress/Remaining` correction, the second fresh targeted reviewer verified B02 resolution, the complete corrected diff, status counters/evidence and preservation of prior sections; it found no BLOCKER or IMPROVEMENT and returned `VERDICT OK`. DEFERRED: before a future successful behavior workflow, add a slice-specific final PASS gate and exact-inventory residual-object cleanup fallback.
 
-### Next action
-User reviews the checkpoint and, if accepted, stages and commits `scripts/run_partitioning_file_pruning_acceptance.py` and `docs/status.md`; no push or transition to PF-ENV-002 is authorized.
+### Completion
+PF-ENV-001 is complete and committed as `bfa8023`.
 
 ## TASK_ID: PF-ENV-002
 
 - Source: `docs/bootstrap-partitioning-file-pruning.md` §5.2, “PF-ENV-002 — pure helper/parser tests”
-- Status: REVIEW_READY
+- Status: DONE
 - Updated: 2026-10-31T01:33:42+03:00
 - Baseline HEAD: bfa80234ec25d9f9288d7d2a2f3479c52a3c60a6
 
@@ -1452,13 +1484,13 @@ User reviews the checkpoint and, if accepted, stages and commits `scripts/run_pa
 - Fix iterations: 1
 - Details: reviewer call 1 returned `VERDICT BLOCK` only for PF-ENV-002/B03. After the targeted parser/mutation fix, reviewer call 2 re-read the complete tracked/untracked diff, source contracts, saved captures and status section; it confirmed B03 resolution, found no BLOCKER, DEFERRED or IMPROVEMENT, and returned `VERDICT OK`.
 
-### Next action
-User reviews the checkpoint and, if accepted, stages and commits `scripts/run_partitioning_file_pruning_acceptance.py`, `scripts/tests/test_partitioning_file_pruning_acceptance.py`, and `docs/status.md`; no push or transition to PF-ENV-003 is authorized.
+### Completion
+PF-ENV-002 is complete and committed as `02f4d66`.
 
 ## TASK_ID: PF-IMP-001
 
 - Source: `docs/bootstrap-partitioning-file-pruning.md` §5.3, “PF-IMP-001 — route mapping и deterministic generators”; `docs/spec.md` §11.2–§11.4 and AC-022
-- Status: REVIEW_READY
+- Status: DONE
 - Updated: 2026-10-31T11:54:47+03:00
 - Baseline HEAD: 02f4d6634c49ada534c071b3b16c0c7b96e80111
 
@@ -1505,13 +1537,13 @@ User reviews the checkpoint and, if accepted, stages and commits `scripts/run_pa
 - Fix iterations: 0
 - Details: one fresh read-only reviewer inspected the complete three-file diff, AC-022 source contract, SQL generators/assertions/tests, saved `pfimp001_gen` mapping/group/schema/contract/cleanup/secret/manifest evidence and the PF-IMP-001 status section; it found no BLOCKER and returned `VERDICT OK`. DEFERRED: before the final-slice manifest gate is enabled, replace the pre-existing generic `generation/group_counts.csv` requirement with the two dataset-specific paths or create the aggregate path. IMPROVEMENT: future evidence can persist the standalone mutation/port/global-volume probes rather than relying on the main-agent command record; this does not affect AC-022.
 
-### Next action
-User reviews the checkpoint and, if accepted, stages and commits `scripts/run_partitioning_file_pruning_acceptance.py`, `scripts/tests/test_partitioning_file_pruning_acceptance.py`, and `docs/status.md`; no push or transition to PF-IMP-002 is authorized.
+### Completion
+PF-IMP-001 is complete and committed as `42df7c6`.
 
 ## TASK_ID: PF-IMP-002
 
 - Source: `docs/bootstrap-partitioning-file-pruning.md` §5.3, “PF-IMP-002 — eight layouts, reconciliation и topology gate”; `docs/spec.md` §11.2, §11.6, AC-023 and AC-026
-- Status: REVIEW_READY
+- Status: DONE
 - Updated: 2026-10-31T19:02:15+03:00
 - Baseline HEAD: 42df7c62c562f7a931f1a1827dee0ac25e6091bc
 
@@ -1550,13 +1582,13 @@ User reviews the checkpoint and, if accepted, stages and commits `scripts/run_pa
 - Fix iterations: 0
 - Details: one fresh read-only reviewer inspected the complete three-file diff, source AC, code/tests/status, all eight layout/spec/contract/reconciliation/topology/bounds evidence sets, the 71-command journal, 98-file manifest, exact-inventory deletion of 479 residual keys and final environment restoration. It found no BLOCKER, DEFERRED or IMPROVEMENT and returned `VERDICT: OK`.
 
-### Next action
-User reviews the checkpoint and, if accepted, stages and commits `scripts/run_partitioning_file_pruning_acceptance.py`, `scripts/tests/test_partitioning_file_pruning_acceptance.py`, and `docs/status.md`; no push or transition to PF-IMP-003 is authorized.
+### Completion
+PF-IMP-002 is complete and committed as `3f411d6`.
 
 ## TASK_ID: PF-IMP-003
 
 - Source: `docs/bootstrap-partitioning-file-pruning.md` §5.3, “PF-IMP-003 — balanced workload”; `docs/spec.md` §11.3, §11.5 and AC-024; runtime permissions boundary in the plan §7
-- Status: REVIEW_READY
+- Status: DONE
 - Updated: 2026-10-31T19:54:37+03:00
 - Baseline HEAD: 87d695db3c0b84e70b41ea54bac27716243b286f
 
@@ -1594,13 +1626,13 @@ User reviews the checkpoint and, if accepted, stages and commits `scripts/run_pa
 - Fix iterations: 0
 - Details: one fresh read-only built-in reviewer (read/grep/find/ls/watchdog_diff/contact_supervisor, no bash/write/edit) inspected the complete three-file diff, all sixteen summaries and raw SQL/results/runtime captures, representative complete raw bundles, comparison/topology/manifest/cleanup/readiness/secret evidence and this status section with prior-section preservation. It returned VERDICT OK within PF-IMP-003/AC-024, with zero BLOCKER, DEFERRED or IMPROVEMENT; it did not independently execute hash/unittest/LSP assertions. Post-review Git scope/whitespace and stopped-environment/volume checks remained consistent.
 
-### Next action
-User reviews the checkpoint and, if accepted, stages and commits `scripts/run_partitioning_file_pruning_acceptance.py`, `scripts/tests/test_partitioning_file_pruning_acceptance.py`, and `docs/status.md`; no push or transition to PF-IMP-004 is authorized.
+### Completion
+PF-IMP-003 is complete and committed as `651e070`.
 
 ## TASK_ID: PF-IMP-004
 
 - Source: `docs/bootstrap-partitioning-file-pruning.md` §5.3, “PF-IMP-004 — skewed workload”; `docs/spec.md` §11.3, §11.5 and AC-025; runtime permissions boundary in the plan §7
-- Status: REVIEW_READY
+- Status: DONE
 - Updated: 2026-10-31T22:13:11+03:00
 - Baseline HEAD: 651e070f69c2e1ea0e641f9f19b2f2a245781256
 
@@ -1638,13 +1670,13 @@ User reviews the checkpoint and, if accepted, stages and commits `scripts/run_pa
 - Fix iterations: 1
 - Details: reviewer call 1 inspected the complete diff, source AC and saved runtime evidence and returned `VERDICT OK` with no findings. After the targeted stale-Remaining correction, reviewer call 2 re-read the complete diff and corrected status section, found no BLOCKER, DEFERRED or IMPROVEMENT, and returned `VERDICT OK`.
 
-### Next action
-User reviews the checkpoint and, if accepted, stages and commits `scripts/run_partitioning_file_pruning_acceptance.py`, `scripts/tests/test_partitioning_file_pruning_acceptance.py`, and `docs/status.md`; no push or transition to PF-IMP-005 is authorized.
+### Completion
+PF-IMP-004 is complete and committed as `f8b8da1`.
 
 ## TASK_ID: PF-IMP-005
 
 - Source: `docs/bootstrap-partitioning-file-pruning.md` §5.3, “PF-IMP-005 — causal evidence matrix”; `docs/spec.md` §11.6 and AC-026
-- Status: REVIEW_READY
+- Status: DONE
 - Updated: 2026-10-31T22:55:49+03:00
 - Baseline HEAD: f8b8da17269b590b9ffd33e897b601c4da08a0d1
 
@@ -1700,13 +1732,13 @@ User reviews the checkpoint and, if accepted, stages and commits `scripts/run_pa
 - Fix iterations: 1
 - Details: call 1 returned VERDICT BLOCK for B04 only. After one targeted fix and all affected checks, fresh built-in reviewer call 2 (read/grep/find/ls/watchdog_diff/contact_supervisor, no bash/write/edit) inspected the complete corrected three-file diff, source AC, status and runtime evidence; it confirmed B04 resolution and returned VERDICT OK with no BLOCKER, DEFERRED or IMPROVEMENT. It did not independently execute tests, LSP, hash or port checks. Post-review hashes confirm no files changed during review; final scope/whitespace/status-preservation and stopped-environment/volume checks passed.
 
-### Next action
-User reviews the checkpoint and, if accepted, stages and commits `scripts/run_partitioning_file_pruning_acceptance.py`, `scripts/tests/test_partitioning_file_pruning_acceptance.py`, and `docs/status.md`; no push or transition to PF-IMP-006 is authorized.
+### Completion
+PF-IMP-005 is complete and committed as `0d3324a`.
 
 ## TASK_ID: PF-IMP-006
 
 - Source: `docs/bootstrap-partitioning-file-pruning.md` §5.3 PF-IMP-006; `docs/spec.md` §11.7 AC-021–AC-027; current user authorization for Docker runtime actions
-- Status: REVIEW_READY
+- Status: DONE
 - Updated: 2026-11-01T00:34:37+03:00
 - Baseline HEAD: 0d3324a36088e3020923ee14bf81340052f95ae4
 
@@ -1750,5 +1782,5 @@ User reviews the checkpoint and, if accepted, stages and commits `scripts/run_pa
 - Fix iterations: 0
 - Details: one fresh builtin read-only reviewer (read/grep/find/ls/watchdog_diff/contact_supervisor, no bash/write/edit; effective configuration checked) inspected the complete three-file diff, source contracts, this section, runtime boundaries, catalog/object evidence, layouts, causal matrix and representative raw bundles, cleanup, manifest, secret scan and command journal. VERDICT OK, no BLOCKER/DEFERRED/IMPROVEMENT. Exhaustive test/hash/replay and live port/global-volume checks were supervisor evidence, not independently executed by reviewer. Post-review hashes of all three files match the pre-review snapshot; only permitted status/verdict/time/next-action finalization follows.
 
-### Next action
-User reviews the checkpoint and, if accepted, authorizes staging and committing `scripts/run_partitioning_file_pruning_acceptance.py`, `scripts/tests/test_partitioning_file_pruning_acceptance.py`, and `docs/status.md` with proposed message `feat: finalize partition pruning acceptance evidence and cleanup`; no staging, commit, push or next-task transition has been performed.
+### Completion
+PF-IMP-006 is complete and committed as `88fc7db`. The partitioning/file-pruning slice is complete; final acceptance `pfimp006_final` records AC-021–AC-027 PASS.
