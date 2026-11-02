@@ -451,12 +451,78 @@ class EnvironmentFlowTests(unittest.TestCase):
         self.assertEqual(result.stdout, "[REDACTED]")
         self.assertNotIn(secret, (self.runner.evidence_dir / "redaction.txt").read_text())
 
+    def test_inherited_dbt_commands_use_pinned_project_and_never_pull(self):
+        self.runner.evidence_dir.mkdir(parents=True)
+        with patch.object(target.subprocess, "run", return_value=SimpleNamespace(stdout="loaded", stderr="", returncode=0)) as call:
+            self.runner.load_fixtures("tt_env001_source", "baseline", "batch_1", "load.log")
+        command = call.call_args.args[0]
+        self.assertEqual(command[2:8], ["--project-directory", str(target.ROOT), "-f", str(target.COMPOSE_FILE), "-p", self.runner.project])
+        run = command.index("run")
+        self.assertEqual(command[run + 1:run + 3], ["--pull", "never"])
+        self.assertIn("DBT_TRINO_SCHEMA=tt_env001_source", command)
+
     def test_subprocess_timeout_is_failure_not_full_pass(self):
         with patch.object(target.subprocess, "run", side_effect=subprocess.TimeoutExpired("docker", 300)):
             with self.assertRaises(target.AcceptanceError):
                 self.runner.run()
         self.assertEqual(self.checkpoint()["outcome"], "FAIL")
         self.assertEqual(set(self.checkpoint()["ac_results"].values()), {"NOT_RUN"})
+
+
+class EvidenceTests(unittest.TestCase):
+    def test_boundary_skips_virtual_tables_but_tracks_real_catalog_pointers(self):
+        with tempfile.TemporaryDirectory() as directory:
+            runner = target.TimeTravelWorkflow("tt_boundary", Path(directory))
+            tables = [["table_schema", "table_name", "table_type"], ["system", "iceberg_tables", "BASE TABLE"], ["information_schema", "columns", "BASE TABLE"], ["existing", "fact", "BASE TABLE"]]
+            with patch.object(runner, "query_csv", side_effect=[[["schema_name"], ["system"], ["existing"]], tables]), patch.object(runner, "list_objects", return_value={"Prefix": "warehouse/"}), patch.object(runner, "metadata", return_value={"metadata-location": "s3://bucket/existing/metadata"}) as metadata:
+                state = runner.boundary("before")
+            metadata.assert_called_once_with("existing", "fact")
+            self.assertEqual(state["pointers"], {"existing.fact": "s3://bucket/existing/metadata"})
+
+    def test_listing_rejects_truncation_duplicates_and_foreign_keys(self):
+        valid = {"Prefix": "warehouse/task/", "Contents": [{"Key": "warehouse/task/a", "Size": 3, "ETag": "abc"}]}
+        self.assertEqual(len(target.object_inventory(valid, "warehouse/task/")), 1)
+        mutations = []
+        for key, value in [("IsTruncated", True), ("NextContinuationToken", "next"), ("Contents", None), ("Prefix", "other/")]:
+            mutations.append({**valid, key: value})
+        mutations.append({**valid, "Contents": valid["Contents"] * 2})
+        mutations.append({**valid, "Contents": [{"Key": "warehouse/task_sibling/a", "Size": 3, "ETag": "abc"}]})
+        for mutation in mutations:
+            with self.subTest(mutation=mutation), self.assertRaises(target.AcceptanceError):
+                target.object_inventory(mutation, "warehouse/task/")
+
+    def test_manifest_detects_missing_extra_and_changed_evidence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            runner = target.TimeTravelWorkflow("tt_manifest", root)
+            runner.write_text("proof.json", "{}")
+            runner.write_evidence_manifest()
+            target.verify_manifest(root, {"proof.json"})
+            with self.assertRaises(target.AcceptanceError):
+                target.verify_manifest(root, {"missing.json"})
+            runner.write_text("proof.json", "changed")
+            with self.assertRaises(target.AcceptanceError):
+                target.verify_manifest(root, {"proof.json"})
+            runner.write_evidence_manifest()
+            runner.write_text("extra.json", "extra")
+            with self.assertRaises(target.AcceptanceError):
+                target.verify_manifest(root, {"proof.json"})
+
+    def test_cleanup_failure_excludes_pass_even_when_all_ac_claimed_pass(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            runner = target.TimeTravelWorkflow("tt_failure", root)
+            runner.evidence_reserved = True
+            runner.allowlist_verified = True
+            runner.initial_state = "initial_running"
+            runner.ac_results = {key: "PASS" for key in runner.ac_results}
+            with patch.object(runner, "preflight"), patch.object(runner, "start_stack"), patch.object(runner, "assert_allowlist_absent"), patch.object(runner, "immutable", return_value={"file": "hash"}), patch.object(runner, "boundary", return_value={}), patch.object(runner, "cleanup_task_data", side_effect=target.AcceptanceError("delete failed")), patch.object(runner, "assert_environment_restored"):
+                with self.assertRaises(target.AcceptanceError):
+                    runner.run_slice(lambda: None, complete=True)
+            summary = json.loads((root / "acceptance_summary.json").read_text())
+            self.assertEqual(summary["outcome"], "FAIL")
+            self.assertIn("delete failed", summary["error"])
+            self.assertEqual(summary["ac_results"]["AC-033"], "NOT_RUN")
 
 
 if __name__ == "__main__":

@@ -1932,3 +1932,23 @@ The user explicitly authorized execution of the entire TT slice with a commit af
 - Live runs exposed two defects absent from the simulator: Docker setup containers omit State.Health; healthy HTTP does not guarantee Trino SQL readiness. Safe map lookup and bounded retries only for the initializing diagnostic fix both. Added a regression that retries initialization but rejects connection errors immediately.
 - `tt_env_live_002` failed before ownership persistence; exact startup IDs from its command journal were validated and recorded in cleanup/recovered_ownership.json before removing only those resources. `tt_env_live_003` cleaned itself after SQL initialization failure. Failed evidence is retained.
 - Current Codex verification: full unit discovery 83 tests; live checkpoint. Earlier pi review applies to the original checkpoint; these live fixes were verified directly, without claiming a new pi reviewer invocation.
+
+## TASK_ID: TT-ENV-002
+
+- Source: [Time travel bootstrap](bootstrap-time-travel.md) §5–6; [spec](spec.md) §12.
+- Status: DONE
+- Updated: 2026-11-02T15:31:29+03:00
+- Baseline HEAD: 75bbdcb1d2e2eb2225088048eb2af3e8cae214d3
+
+### Progress
+- Implemented: Implemented TT-specific evidence manifest with complete hash verification, catalog metadata pointers, full historical object content checksums, protected-path/runtime boundaries, exact-location cleanup and non-blanket AC gates. Inherited dbt commands are pinned to the same project and never pull images.
+- Remaining: none within this stage; final AC-028–AC-033 acceptance is recorded separately under TT-IMP-006.
+
+### AC evidence
+Unit discovery: 88/88 PASS. Live tt_env002_live2: CHECKPOINT, AC-028 PASS, remaining AC NOT_RUN; all five task prefixes empty, pre-existing volumes preserved and environment restored. Initial live failure on virtual system.iceberg_tables reproduced and fixed with a targeted boundary regression. Manifest mutations and simulated cleanup failure cannot produce overall PASS.
+
+### Review
+- Codex direct source/diff verification and recorded tests; no pi reviewer invocation is claimed. User authorized sequential execution and commits on 2026-11-02.
+
+### Next action
+Commit this completed stage, then continue the next dependency in the approved TT plan.

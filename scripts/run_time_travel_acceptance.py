@@ -10,12 +10,18 @@ projects are refused. Named volumes are never removed.
 from __future__ import annotations
 
 import argparse
+import base64
 import csv
+import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import time
+import urllib.parse
+import urllib.request
+from datetime import datetime, timezone
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Sequence
@@ -149,12 +155,13 @@ class TimeTravelAcceptanceRun(AcceptanceRun):
             "-f", str(COMPOSE_FILE), "-p", self.project, *args,
         ]
 
-    def capture(self, command: Sequence[str], path: str | None) -> CommandResult:
+    def capture(self, command: Sequence[str], path: str | None, *, allowed_returncodes: set[int] | None = None) -> CommandResult:
         # Pin inherited read helpers too; COMPOSE_* must not redirect the project.
         if list(command[:2]) == ["docker", "compose"]:
             args = list(command[2:])
-            if args and args[0] == "run":
-                args[1:1] = ["--pull", "never"]
+            if "run" in args:
+                pos = args.index("run") + 1
+                args[pos:pos] = ["--pull", "never"]
             command = self.compose(*args)
         env = {key: value for key, value in os.environ.items() if not key.startswith("COMPOSE_")}
         started = time.monotonic()
@@ -177,9 +184,14 @@ class TimeTravelAcceptanceRun(AcceptanceRun):
             self.write_text(path, captured.stdout)
             if captured.stderr:
                 self.write_text(f"{path}.stderr.log", captured.stderr)
-        if captured.returncode:
+        if captured.returncode not in (allowed_returncodes or {0}):
+            self.write_text(f"diagnostics/command_{len(self.commands):04}.stderr.log", captured.stderr)
             raise AcceptanceError(f"command failed (exit {captured.returncode}); see command journal")
         return captured
+
+    def run_command(self, command: Sequence[str], log_path: str | None, *, allowed_returncodes: set[int] | None = None) -> CommandResult:
+        # Inherited fixture/dbt helpers must use the same pinned project/redaction.
+        return self.capture(command, log_path, allowed_returncodes=allowed_returncodes)
 
     def inventory(self, project: str) -> list[dict[str, Any]]:
         result = self.capture([
@@ -397,6 +409,234 @@ class TimeTravelAcceptanceRun(AcceptanceRun):
                 "allowlist_verified": self.allowlist_verified,
                 "preserved_volumes": self.final_volumes, "errors": errors,
             })
+        if errors:
+            raise AcceptanceError("; ".join(errors))
+
+
+def require(condition: bool, message: str) -> None:
+    if not condition:
+        raise AcceptanceError(message)
+
+
+def object_inventory(listing: dict[str, Any], prefix: str) -> dict[str, dict[str, Any]]:
+    require(listing.get("Prefix") == prefix, "wrong object listing prefix")
+    require(listing.get("IsTruncated", False) is False and "NextContinuationToken" not in listing, "incomplete object inventory")
+    contents = listing.get("Contents", [])
+    require(isinstance(contents, list), "malformed object inventory")
+    result = {}
+    for item in contents:
+        require(isinstance(item, dict), "malformed object entry")
+        key = item.get("Key")
+        require(isinstance(key, str) and key.startswith(prefix) and key not in result, "wrong/duplicate object key")
+        require(type(item.get("Size")) is int and item["Size"] >= 0 and isinstance(item.get("ETag"), str), "invalid object size/identity")
+        result[key] = {"size": item["Size"], "etag": item["ETag"]}
+    return result
+
+
+def verify_manifest(root: Path, required: set[str]) -> None:
+    manifest = json.loads((root / "evidence_manifest.json").read_text())
+    entries = manifest.get("files", [])
+    paths = [entry["path"] for entry in entries]
+    require(len(paths) == len(set(paths)) and required <= set(paths), "incomplete/duplicate evidence manifest")
+    actual = {str(p.relative_to(root)) for p in root.rglob("*") if p.is_file() and p.name not in {"acceptance_summary.json", "evidence_manifest.json"}}
+    require(set(paths) == actual, "manifest does not cover all evidence")
+    for entry in entries:
+        path = root / entry["path"]
+        require(path.resolve().is_relative_to(root.resolve()) and path.is_file() and not path.is_symlink(), "unsafe manifest path")
+        data = path.read_bytes()
+        require(entry["size"] == len(data) and entry["sha256"] == hashlib.sha256(data).hexdigest(), "evidence checksum mismatch")
+
+
+class TimeTravelWorkflow(TimeTravelAcceptanceRun):
+    """TT-only evidence/cleanup orchestration; never inherit blanket-PASS finalize."""
+
+    @property
+    def schema(self) -> str:
+        return f"{self.run_id}_time_travel"
+
+    @property
+    def table(self) -> str:
+        return f'"{CATALOG}"."{self.schema}"."time_travel_package_delivery"'
+
+    @property
+    def source_prefix(self) -> str:
+        return f"{self.run_id}_source"
+
+    def sql(self, name: str, sql: str) -> None:
+        self.write_text(f"{name}.sql", sql.strip() + "\n")
+        self.capture(["docker", "compose", "exec", "-T", "trino", "trino", "--execute", sql], f"{name}.log")
+
+    def rest(self, path: str) -> dict[str, Any]:
+        port = self.capture(["docker", "compose", "port", "polaris", "8181"], None).stdout.strip().rsplit(":", 1)[-1]
+        base = f"http://127.0.0.1:{port}/api/catalog/v1"
+        credentials = f"{os.environ['POLARIS_CLIENT_ID']}:{os.environ['POLARIS_CLIENT_SECRET']}"
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        auth = urllib.request.Request(base + "/oauth/tokens", data=urllib.parse.urlencode({"grant_type": "client_credentials", "scope": "PRINCIPAL_ROLE:ALL"}).encode(), headers={"Authorization": "Basic " + base64.b64encode(credentials.encode()).decode(), "Polaris-Realm": "POLARIS", "Content-Type": "application/x-www-form-urlencoded"})
+        with opener.open(auth, timeout=20) as response:
+            token = json.load(response)["access_token"]
+        request = urllib.request.Request(base + "/" + path, headers={"Authorization": "Bearer " + token, "Polaris-Realm": "POLARIS"})
+        with opener.open(request, timeout=20) as response:
+            body = json.load(response)
+        require(isinstance(body, dict), "invalid Polaris response")
+        # Load-table responses may include credential configuration; retain metadata only.
+        return {key: value for key, value in body.items() if key in {"metadata", "metadata-location", "identifiers"}}
+
+    def metadata(self, schema: str | None = None, table: str = "time_travel_package_delivery") -> dict[str, Any]:
+        schema = schema or self.schema
+        return self.rest(f"{CATALOG}/namespaces/{urllib.parse.quote(schema, safe='')}/tables/{urllib.parse.quote(table, safe='')}")
+
+    def immutable(self) -> dict[str, str]:
+        files = self.capture(["git", "ls-files", "dbt", "docker", "infra", "compose.yaml"], None).stdout.splitlines()
+        require(bool(files), "empty protected file set")
+        return {name: hashlib.sha256((ROOT / name).read_bytes()).hexdigest() for name in files}
+
+    def boundary(self, stage: str) -> dict[str, Any]:
+        names = ", ".join(f"'{name}'" for name in self.allowlist.schemas)
+        base = f"runtime/boundary_{stage}"
+        schemas = self.query_csv(f"{base}/schemas.csv", f"SELECT schema_name FROM {CATALOG}.information_schema.schemata WHERE schema_name NOT IN ({names}) ORDER BY schema_name")
+        tables = self.query_csv(f"{base}/tables.csv", f"SELECT table_schema, table_name, table_type FROM {CATALOG}.information_schema.tables WHERE table_schema NOT IN ({names}) ORDER BY table_schema, table_name")
+        pointers = {}
+        for schema, table, kind in tables[1:]:
+            if schema not in {"information_schema", "system"} and kind == "BASE TABLE":
+                pointers[f"{schema}.{table}"] = self.metadata(schema, table)["metadata-location"]
+        objects = object_inventory(self.list_objects("warehouse/"), "warehouse/")
+        objects = {key: val for key, val in objects.items() if not key.startswith(self.allowlist.object_prefixes)}
+        state = {"schemas": schemas, "tables": tables, "pointers": pointers, "objects": objects}
+        self.write_json(f"{base}/state.json", state)
+        return state
+
+    def objects(self, schema: str) -> dict[str, Any]:
+        self.allowlist.require_schema(schema)
+        prefix = f"warehouse/{schema}/"
+        result = object_inventory(self.list_objects(prefix), prefix)
+        for key in result:
+            self.allowlist.require_object(key)
+        return result
+
+    def checksums(self, schema: str, objects: dict[str, Any]) -> dict[str, str]:
+        self.allowlist.require_schema(schema)
+        require(bool(objects), "no objects to checksum")
+        prefix = f"warehouse/{schema}/"
+        # Fixed script, URI passed as positional argument; no key is interpolated in shell code.
+        result = self.capture(["docker", "compose", "run", "--rm", "--no-deps", "--entrypoint", "sh", "bucket-setup", "-c", 'set -eu; aws s3 cp --recursive "$1" /tmp/ttobjects/ >/dev/null; find /tmp/ttobjects -type f -exec sha256sum {} +', "sh", f"s3://{BUCKET}/{prefix}"], None)
+        hashes = {}
+        for line in result.stdout.splitlines():
+            digest, path = line.split(maxsplit=1)
+            require(re.fullmatch(r"[0-9a-f]{64}", digest) is not None and path.startswith("/tmp/ttobjects/"), "invalid content checksum")
+            key = prefix + path.removeprefix("/tmp/ttobjects/")
+            self.allowlist.require_object(key)
+            require(key not in hashes, "duplicate checksum")
+            hashes[key] = digest
+        require(set(hashes) == set(objects) and self.objects(schema) == objects, "object/checksum inventory drift")
+        return hashes
+
+    def bundle(self, label: str) -> dict[str, Any]:
+        base = f"states/{label}"
+        loaded = self.metadata()
+        metadata = loaded.get("metadata")
+        require(isinstance(metadata, dict), "missing catalog metadata")
+        key = loaded.get("metadata-location", "").removeprefix(f"s3://{BUCKET}/")
+        self.allowlist.require_object(key)
+        objects = self.objects(self.schema)
+        require(key in objects, "catalog metadata pointer missing in storage")
+        state = {
+            "metadata_location": loaded["metadata-location"], "metadata": metadata,
+            "columns": self.query_csv(f"{base}/columns.csv", f"DESCRIBE {self.table}"),
+            "rows": self.query_csv(f"{base}/rows.csv", f"SELECT * FROM {self.table} ORDER BY package_id"),
+            "snapshots": self.query_csv(f"{base}/snapshots.csv", f'SELECT * FROM "{CATALOG}"."{self.schema}"."time_travel_package_delivery$snapshots" ORDER BY committed_at'),
+            "history": self.query_csv(f"{base}/history.csv", f'SELECT * FROM "{CATALOG}"."{self.schema}"."time_travel_package_delivery$history" ORDER BY made_current_at'),
+            "files": self.query_csv(f"{base}/files.csv", f'SELECT * FROM "{CATALOG}"."{self.schema}"."time_travel_package_delivery$files" ORDER BY file_path'),
+            "objects": objects, "sha256": self.checksums(self.schema, objects),
+        }
+        self.write_json(f"{base}/bundle.json", state)
+        return state
+
+    def cleanup_task_data(self) -> None:
+        require(self.allowlist_verified, "cleanup requires verified ownership")
+        for schema in reversed(self.allowlist.schemas):
+            self.allowlist.require_schema(schema)
+            existing = self.query_csv(f"cleanup/{schema}/exists.csv", f"SELECT schema_name FROM {CATALOG}.information_schema.schemata WHERE schema_name = '{schema}'")
+            if len(existing) > 1:
+                ddl = self.query_csv(f"cleanup/{schema}/location.csv", f'SHOW CREATE SCHEMA "{CATALOG}"."{schema}"')
+                location = re.escape(f"s3://{BUCKET}/warehouse/{schema}")
+                require(len(ddl) == 2 and re.search(r"location\s*=\s*'" + location + r"/?'", ddl[1][0]) is not None, "schema location ownership drift")
+                self.sql(f"cleanup/{schema}/drop", f'DROP SCHEMA "{CATALOG}"."{schema}" CASCADE')
+            remaining = self.objects(schema)
+            keys = list(remaining)
+            for start in range(0, len(keys), 500):
+                batch = keys[start:start + 500]
+                for key in batch:
+                    self.allowlist.require_object(key)
+                payload = json.dumps({"Objects": [{"Key": key} for key in batch], "Quiet": False})
+                result = self.capture(["docker", "compose", "run", "--rm", "--no-deps", "--entrypoint", "aws", "bucket-setup", "s3api", "delete-objects", "--bucket", BUCKET, "--delete", payload, "--output", "json"], f"cleanup/{schema}/delete_{start}.json")
+                response = json.loads(result.stdout)
+                require(not response.get("Errors") and {x["Key"] for x in response.get("Deleted", [])} == set(batch), "object cleanup incomplete")
+            require(not self.objects(schema), "task objects remain")
+        names = ", ".join(f"'{name}'" for name in self.allowlist.schemas)
+        rows = self.query_csv("cleanup/remaining_schemas.csv", f"SELECT schema_name FROM {CATALOG}.information_schema.schemata WHERE schema_name IN ({names}) ORDER BY schema_name")
+        require(rows == [["schema_name"]], "task schemas remain")
+        self.write_json("cleanup/data.json", {"schemas_absent": True, "all_five_prefixes_empty": True})
+        self.data_cleaned = True
+
+    def run_slice(self, workflow, *, complete: bool = False) -> None:
+        require(not self.run_attempted, "run instances are single-use")
+        self.run_attempted = True
+        self.ac_results["AC-033"] = "NOT_RUN"
+        errors = []
+        before = None
+        protected = None
+        restored = False
+        try:
+            self.preflight()
+            self.start_stack()
+            self.assert_allowlist_absent()
+            protected = self.immutable()
+            self.write_json("preflight/immutable.json", protected)
+            before = self.boundary("before")
+            workflow()
+        except Exception as error:
+            errors.append(f"{type(error).__name__}: {error}")
+        finally:
+            if self.allowlist_verified:
+                try:
+                    self.cleanup_task_data()
+                    after = self.boundary("after")
+                    require(before is not None and before == after, "non-task runtime state changed")
+                    require(protected is not None and protected == self.immutable(), "protected code changed")
+                    self.write_json("runtime/isolation.json", {"unchanged": True})
+                    self.ac_results["AC-028"] = "PASS"
+                except Exception as error:
+                    errors.append(f"cleanup/isolation: {error}")
+            if self.owns_stack:
+                try:
+                    self.stop_stack()
+                except Exception as error:
+                    errors.append(f"lifecycle cleanup: {error}")
+            if self.initial_state != "unavailable":
+                try:
+                    self.assert_environment_restored()
+                    restored = True
+                    self.write_json("cleanup/environment.json", {"restored": True, "initial_state": self.initial_state, "preserved_volumes": self.final_volumes})
+                except Exception as error:
+                    errors.append(f"environment: {error}")
+        if not self.evidence_reserved:
+            raise AcceptanceError("; ".join(errors))
+        try:
+            require(not errors, "; ".join(errors))
+            require(self.data_cleaned and restored, "cleanup/restoration gate failed")
+            self.assert_no_secrets_in_evidence()
+            required = {"preflight/task_allowlist.json", "cleanup/data.json", "cleanup/environment.json", "runtime/isolation.json", "commands.jsonl", "secret_scan.json"}
+            if complete:
+                require(all(self.ac_results[f"AC-{n:03}"] == "PASS" for n in range(28, 33)), "mandatory AC still pending")
+                required |= {"history/comparison.json", "negative/comparison.json", "rollback/comparison.json", "source/comparison.json", "runtime/end_to_end.json"}
+            self.write_evidence_manifest()
+            verify_manifest(self.evidence_dir, required)
+            if complete:
+                self.ac_results["AC-033"] = "PASS"
+        except Exception as error:
+            if str(error) not in errors:
+                errors.append(str(error))
+        self.write_json_atomic("acceptance_summary.json", {"run_id": self.run_id, "outcome": "FAIL" if errors else ("PASS" if complete else "CHECKPOINT"), "ac_results": self.ac_results, "error": "; ".join(errors) or None, "command_count": len(self.commands), "started_at": self.started_at, "finished_at": datetime.now(timezone.utc).isoformat()})
         if errors:
             raise AcceptanceError("; ".join(errors))
 
