@@ -566,5 +566,32 @@ class SnapshotInvariantTests(unittest.TestCase):
                 target.assert_rollback(before, changed, [90, 20, 70])
 
 
+class TypedOracleTests(unittest.TestCase):
+    def test_all_three_independent_expected_states(self):
+        for label in ("H0", "H1", "Hbad"):
+            target.assert_rows(target.expected_rows(label), label)
+        self.assertEqual(target.expected_rows("H0")[2][5:], [0, 0, 1.0])
+        self.assertEqual(target.expected_rows("H1")[2][5:], [2, 3, 1.5])
+
+    def test_rejects_missing_duplicate_null_type_and_value_mutations(self):
+        rows = target.expected_rows("H0")
+        variants = [[], rows[:-1], rows + [rows[0]], [rows[0], rows[0], *rows[2:]]]
+        for row, col, value in [(3, 3, "NULL"), (0, 4, "true"), (0, 5, True), (0, 5, 1.0), (2, 3, 360), (2, 7, 1.5), (1, 6, None), (0, 7, float("nan")), (0, 7, float("inf"))]:
+            changed = copy.deepcopy(rows)
+            changed[row][col] = value
+            variants.append(changed)
+        for variant in variants:
+            with self.subTest(variant=variant), self.assertRaises(target.AcceptanceError):
+                target.assert_rows(variant, "H0")
+
+    def test_ratio_tolerance_does_not_apply_to_counts_or_hours(self):
+        rows = target.expected_rows("H1")
+        rows[2][7] += 0.00009
+        target.assert_rows(rows, "H1")
+        rows[2][6] += 0.00009
+        with self.assertRaises(target.AcceptanceError):
+            target.assert_rows(rows, "H1")
+
+
 if __name__ == "__main__":
     unittest.main()

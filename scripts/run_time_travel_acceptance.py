@@ -447,6 +447,48 @@ def verify_manifest(root: Path, required: set[str]) -> None:
         require(entry["size"] == len(data) and entry["sha256"] == hashlib.sha256(data).hexdigest(), "evidence checksum mismatch")
 
 
+COLUMNS = (
+    ("package_id", "varchar"), ("route_version_id", "varchar"),
+    ("current_status", "varchar"), ("delivery_duration_hours", "double"),
+    ("is_on_time", "boolean"), ("completed_visit_count", "bigint"),
+    ("completed_dwell_hours", "double"), ("actual_to_planned_ratio", "double"),
+)
+H0 = [
+    ["P1", "R1-V1", "delivered", 48, True, 1, 4, 1.0],
+    ["P2", "R1-V2", "delivered", 48, False, 3, 16, 1.5],
+    ["P3", "R1-V2", "delivered", 36, True, 0, 0, 1.0],
+    ["P4", "R1-V2", "arrived_at_hub", None, None, 0, 0, 0.75],
+]
+
+
+def expected_rows(label: str) -> list[list[Any]]:
+    require(label in {"H0", "H1", "Hbad"}, "unknown expected state")
+    rows = [row.copy() for row in H0]
+    if label != "H0":
+        rows[2][5:] = [2, 3, 1.5]
+    if label == "Hbad":
+        rows[2][3] = 360
+    return rows
+
+
+def assert_rows(rows: list[list[Any]], label: str) -> None:
+    expected = expected_rows(label)
+    require(len(rows) == 4, "expected four package rows")
+    for actual, oracle in zip(rows, expected):
+        require(isinstance(actual, list) and len(actual) == 8, "invalid typed row shape")
+        for index, (value, wanted) in enumerate(zip(actual, oracle)):
+            if wanted is None:
+                require(value is None, "expected SQL NULL")
+            elif type(wanted) is bool:
+                require(type(value) is bool and value == wanted, "boolean/type mismatch")
+            elif index == 5:
+                require(type(value) is int and value == wanted, "BIGINT/count mismatch")
+            elif isinstance(wanted, str):
+                require(type(value) is str and value == wanted, "package/status mismatch")
+            else:
+                require(type(value) in {int, float} and abs(value - wanted) <= (0.0001 if index == 7 else 0), "numeric value/type mismatch")
+
+
 def snapshot_chain(metadata: dict[str, Any], count: int) -> list[int]:
     snapshots = metadata.get("snapshots", [])
     require(len(snapshots) == count, "unexpected data snapshot count")
@@ -494,6 +536,63 @@ class TimeTravelWorkflow(TimeTravelAcceptanceRun):
     @property
     def source_prefix(self) -> str:
         return f"{self.run_id}_source"
+
+    @property
+    def source_table(self) -> str:
+        return f'"{CATALOG}"."{self.source_prefix}_gold"."gold_package_delivery_fact"'
+
+    def projection(self) -> str:
+        return """CAST(package_id AS VARCHAR) AS package_id,
+            CAST(route_version_id AS VARCHAR) AS route_version_id,
+            CAST(current_status AS VARCHAR) AS current_status,
+            CAST(delivery_duration_hours AS DOUBLE) AS delivery_duration_hours,
+            CAST(is_on_time AS BOOLEAN) AS is_on_time,
+            CAST(completed_visit_count AS BIGINT) AS completed_visit_count,
+            CAST(completed_dwell_hours AS DOUBLE) AS completed_dwell_hours,
+            CAST(actual_distance_meters / planned_distance_meters AS DOUBLE) AS actual_to_planned_ratio"""
+
+    def typed_rows(self, name: str, relation: str, *, source: bool = False) -> list[list[Any]]:
+        projected = f"(SELECT {self.projection()} FROM {relation})" if source else relation
+        fields = ", ".join(f"CAST({field} AS JSON)" for field, _ in COLUMNS)
+        # ARRAY(JSON) preserves ordered heterogeneous values and SQL NULL;
+        # ROW-to-JSON depends on field_names_in_json_cast_enabled.
+        raw = self.query_csv(f"{name}.csv", f"SELECT json_format(CAST(ARRAY[{fields}] AS JSON)) AS typed_row FROM {projected} ORDER BY package_id")
+        require(raw[0] == ["typed_row"], "unexpected typed row header")
+        rows = [json.loads(row[0]) for row in raw[1:]]
+        self.write_json(f"{name}.json", rows)
+        return rows
+
+    def build_source(self, name: str, *, full: bool) -> None:
+        base = f"source/{name}"
+        self.dbt(self.source_prefix, ["build" if full else "run", "--select", "tag:bronze", "tag:silver", "tag:gold"], base, f"{base}/dbt.log")
+        results = json.loads((self.evidence_dir / base / "target/run_results.json").read_text())["results"]
+        models = [row for row in results if row["unique_id"].startswith("model.")]
+        tests = [row for row in results if row["unique_id"].startswith("test.")]
+        require(len(models) == 15 and all(row["status"] == "success" for row in models), "source build did not execute all 15 models")
+        require(all(row["status"] in {"success", "pass"} for row in results), "source build contains failures/skips")
+        if full:
+            require(bool(tests) and all(row["status"] == "pass" for row in tests), "baseline tests not selected/passing")
+
+    def stage_h0(self) -> None:
+        require(self.allowlist_verified, "source writes require verified allowlist")
+        for schema in self.allowlist.schemas:
+            location = f"s3://{BUCKET}/warehouse/{schema}/"
+            self.allowlist.require_location(schema, location)
+            self.sql(f"source/create/{schema}", f"CREATE SCHEMA {CATALOG}.{schema} WITH (location = '{location}')")
+        self.load_fixtures(self.source_prefix, "baseline", "batch_1", "source/batch_1/load.log")
+        self.build_source("batch_1", full=False)
+        self.source_h0 = self.typed_rows("source/h0", self.source_table, source=True)
+        assert_rows(self.source_h0, "H0")
+        self.sql("h0/create_table", f"CREATE TABLE {self.table} WITH (format='PARQUET', format_version=2) AS SELECT {self.projection()} FROM {self.source_table}")
+        columns = self.query_csv("h0/describe.csv", f"DESCRIBE {self.table}")
+        require([row[:2] for row in columns[1:]] == [list(pair) for pair in COLUMNS], "typed table schema mismatch")
+        actual = self.typed_rows("h0/rows", self.table)
+        assert_rows(actual, "H0")
+        require(actual == self.source_h0, "H0 was not sourced from staged Gold")
+        self.h0 = self.bundle("H0")
+        self.ids = snapshot_chain(self.h0["metadata"], 1)
+        require(self.h0["metadata"].get("format-version") == 2, "exercise requires Iceberg format v2")
+        self.write_json("h0/comparison.json", {"staged_source_matches": True, "snapshot_id": self.ids[0]})
 
     def probe(self) -> None:
         started = time.monotonic()
@@ -567,6 +666,13 @@ class TimeTravelWorkflow(TimeTravelAcceptanceRun):
             self.allowlist.require_object(key)
         return result
 
+    def task_objects(self) -> dict[str, Any]:
+        prefix = f"warehouse/{self.run_id}_"
+        result = object_inventory(self.list_objects(prefix), prefix)
+        for key in result:
+            self.allowlist.require_object(key)
+        return result
+
     def checksums(self, schema: str, objects: dict[str, Any]) -> dict[str, str]:
         self.allowlist.require_schema(schema)
         require(bool(objects), "no objects to checksum")
@@ -593,6 +699,8 @@ class TimeTravelWorkflow(TimeTravelAcceptanceRun):
         self.allowlist.require_object(key)
         objects = self.objects(self.schema)
         require(key in objects, "catalog metadata pointer missing in storage")
+        raw = self.capture(["docker", "compose", "run", "--rm", "--no-deps", "--entrypoint", "aws", "bucket-setup", "s3", "cp", f"s3://{BUCKET}/{key}", "-"], f"{base}/metadata.json").stdout
+        require(json.loads(raw) == metadata, "catalog/storage metadata mismatch")
         state = {
             "metadata_location": loaded["metadata-location"], "metadata": metadata,
             "columns": self.query_csv(f"{base}/columns.csv", f"DESCRIBE {self.table}"),
@@ -601,6 +709,7 @@ class TimeTravelWorkflow(TimeTravelAcceptanceRun):
             "history": self.query_csv(f"{base}/history.csv", f'SELECT * FROM "{CATALOG}"."{self.schema}"."time_travel_package_delivery$history" ORDER BY made_current_at'),
             "files": self.query_csv(f"{base}/files.csv", f'SELECT * FROM "{CATALOG}"."{self.schema}"."time_travel_package_delivery$files" ORDER BY file_path'),
             "objects": objects, "sha256": self.checksums(self.schema, objects),
+            "task_objects": self.task_objects(),
         }
         self.write_json(f"{base}/bundle.json", state)
         return state

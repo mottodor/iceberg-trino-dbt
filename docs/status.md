@@ -1972,3 +1972,23 @@ Unit discovery 90/90 PASS, including mutation tests for snapshots, parents, sche
 
 ### Next action
 Commit this completed stage, then continue the next dependency in the approved TT plan.
+
+## TASK_ID: TT-IMP-001
+
+- Source: [Time travel bootstrap](bootstrap-time-travel.md) §5–6; [spec](spec.md) §12.
+- Status: DONE
+- Updated: 2026-11-02T15:40:04+03:00
+- Baseline HEAD: 6988d7e3a05f11efe8abee7d9f8f0ccc34bb575d
+
+### Progress
+- Implemented: Implemented immutable fixture batch_1 source build, independent typed P1-P4 oracle, eight-column Iceberg v2 learning table and H0 snapshot. Typed JSON arrays preserve SQL NULL; catalog metadata is checked against stored metadata JSON and content SHA-256 inventories.
+- Remaining: none within this stage; final AC-028–AC-033 acceptance is recorded separately under TT-IMP-006.
+
+### AC evidence
+Unit discovery 93/93 PASS. Live tt_staged_dev002 reached STAGE_PASS stage_h0: all 15 unchanged dbt models executed; staged Gold and educational rows match independent H0; h0/comparison.json and states/H0/bundle.json retained. Prior tt_staged_dev001 exposed ROW-to-JSON field-name semantics; array serialization fixes the reproduced invalid-shape failure, and that failed run cleaned itself. Stateful development run continues under task ownership; final cleanup/end-to-end acceptance belongs to TT-IMP-006.
+
+### Review
+- Codex direct source/diff verification and recorded tests; no pi reviewer invocation is claimed. User authorized sequential execution and commits on 2026-11-02.
+
+### Next action
+Commit this completed stage, then continue the next dependency in the approved TT plan.
