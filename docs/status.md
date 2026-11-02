@@ -2184,3 +2184,23 @@ Direct source/diff review and recorded checks; no independent pi reviewer invoca
 
 ### Next action
 Commit this completed stage and continue the project completion roadmap.
+
+## TASK_ID: COV-001
+
+- Source: [Completion roadmap](bootstrap-time-travel.md) §9; [specification](spec.md) §13–14.
+- Status: DONE
+- Updated: 2026-11-02T17:01:23+03:00
+- Baseline HEAD: fffa42343e9f73d907c12528ace9f381f1a895e2
+
+### Progress
+- Implemented: Audited all 14 source competencies and created the traceability matrix. Eleven are supported by retained core/SE/PF/TT reports; incremental predicates, small-files diagnostics and maintenance have explicit remaining tasks.
+- Remaining: none within this stage.
+
+### AC evidence
+docs/learning-outcomes.md contains exactly 14 mapped competencies and identifies three open learning outcomes. Core Kimball/SCD2/DQ/late-event evidence and existing acceptance PASS are reused without claiming AC-002 completion.
+
+### Review
+Direct source/diff review and recorded checks; no independent pi reviewer invocation is claimed. The user authorized completion of all project tasks and per-stage commits.
+
+### Next action
+Commit this completed stage and continue the project completion roadmap.
