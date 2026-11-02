@@ -2,31 +2,35 @@
 
 ## Current project state
 
-- Reconciled: **2026-11-02**, through Time travel implementation commit `1bf0c5a` and the documentation checkpoint containing this update.
-- **Four slices are implemented, tested and committed. All 42 recorded tasks are DONE**, including TT-DOC-001 in this documentation checkpoint.
-- Full-project completion is not claimed: maintenance, verification of incremental-predicate coverage and full learning-outcome traceability (AC-002) remain open.
+- Reconciled: **2026-11-02**, after all functional implementations and the final completion audit.
+- **The agreed project scope is complete: six accepted slices, all 56 recorded tasks DONE, all 45 criteria PASS and all 14 competencies verified.**
+- Final audit: `project_final_001`, outcome PASS, including AC-002. All stage commits are recorded below; FINAL-002 is completed in this audit/documentation checkpoint.
 
 | Completed slice | Recorded tasks | Final acceptance | Completion commit |
 |---|---|---|---|
-| Core lakehouse | PROBE-001–003, BOOT-ENV-001–003, IMP-001–007 (13) | `imp007_final5`: PASS, 2026-10-29; AC-001 and AC-003–AC-012 | `82b89ab` |
-| Schema evolution | SE-AGENT-001, SE-ENV-001, SE-IMP-001–006 (8) | `seimp006_final2`: PASS, 2026-10-30; AC-013–AC-020 | `25ff57e` |
-| Partitioning / file pruning | PART-PROBE-001–002, PF-ENV-001–002, PF-IMP-001–006 (10) | `pfimp006_final`: PASS, 2026-11-01; AC-021–AC-027 | `88fc7db` |
-| Time travel / rollback | TT-AGENT-001, TT-ENV-001–002, TT-PROBE-001, TT-IMP-001–006, TT-DOC-001 (11) | `tt_imp006_final`: PASS, 2026-11-02; AC-028–AC-033 | `1bf0c5a`; documentation follows in this checkpoint |
+| Core lakehouse | PROBE-001–003, BOOT-ENV-001–003, IMP-001–007 (13) | `imp007_final5`: PASS; AC-001 and AC-003–AC-012 | `82b89ab` |
+| Schema evolution | SE-AGENT-001, SE-ENV-001, SE-IMP-001–006 (8) | `seimp006_final2`: PASS; AC-013–AC-020 | `25ff57e` |
+| Partitioning / file pruning | PART-PROBE-001–002, PF-ENV-001–002, PF-IMP-001–006 (10) | `pfimp006_final`: PASS; AC-021–AC-027 | `88fc7db` |
+| Time travel / rollback | TT-AGENT-001, TT-ENV-001–002, TT-PROBE-001, TT-IMP-001–006, TT-DOC-001 (11) | `tt_imp006_final`: PASS; AC-028–AC-033 | `1bf0c5a`, docs `c568502` |
+| Maintenance | MA-SPEC-001, MA-BOOT-001, MA-ENV-001, MA-IMP-001–005, MA-DOC-001 (9) | `ma_imp005_final`: PASS; AC-034–AC-040 | `8cb10ad`, docs `ff51719` |
+| Incremental predicates | INC-SPEC-001, INC-IMP-001 (2) | `inc_imp001_final2`: PASS; AC-041–AC-045 | `57d0d97` |
+
+COV-001 and FINAL-001–002 complete the competency audit and project verification, bringing the total to 56 tasks. AC-002 is verified by the full matrix and project audit rather than assigned to one functional slice.
 
 ### Evidence and verification
 
-- Final summaries are retained under `artifacts/acceptance/<run-id>/acceptance_summary.json`. These local, Git-ignored directories are not supplied by a fresh clone.
-- All four summaries record outcome PASS, error null and PASS for every criterion assigned to the slice. Environment/probe/staged CHECKPOINT runs are not full-slice PASS.
-- The final TT runner independently executes the full staged workflow from a fresh CLI invocation; saved behavior replay, complete manifest checks, secret scan, isolation, task-data cleanup and environment restoration all pass.
-- Unit discovery on 2026-11-02: **104/104 PASS** (54 partitioning and 50 Time travel tests). Each full TT baseline build passes **128/128 nodes**, 15 models and 113 tests.
-- Protected fixtures/models, old runners/tests, Compose, infrastructure, dependency files and approved spec are unchanged. Prior completed-slice acceptance remains applicable; no shared-path change required a full rerun of those workflows.
-- The local `.env` workflow is documented in README. Values remain local and are excluded from evidence; existing volumes are preserved.
+- All six acceptance summaries record PASS, error null and PASS for their complete assigned criteria. Intermediate environment/probe/staged CHECKPOINT and failed diagnostic runs remain historical evidence.
+- `project_final_001` checks **3559 files across six complete SHA-256 manifests**, raw TT/maintenance/incremental behavior replay, criterion ownership and all 14 source competencies.
+- All **66 implementation/source files** present at the completed-TT baseline `c568502` remain byte-identical; original idea and earlier specification prefixes are preserved. New exercise code is isolated; root dbt models/config, old runners/tests, infrastructure and dependencies are unchanged. Prior completed-slice acceptance remains applicable.
+- Unit discovery: **126/126 PASS**, including counterexamples, mutation tests and refusal of missing slice/AC/competency/cleanup evidence.
+- Live maintenance proves 16 -> 1 current files, two retained historical/current states, deletion of 16 obsolete data files, age/location-bounded orphan cleanup and unchanged ordinary 7d retention defaults.
+- Live incremental proves five initial/seven final unique rows, full-rebuild equality, late-event preservation, duplicate-safe replay/full-refresh, actual source/target predicates and the two exact failure counterexamples.
+- All final owned schemas/object prefixes are empty, task-owned containers/networks are absent and named volumes are preserved. The final Docker audit independently confirms lifecycle cleanup.
+- Evidence remains local and Git-ignored under `artifacts/acceptance/`. Fresh clones regenerate the six named acceptance runs before invoking the completion auditor; occupied IDs are never overwritten.
 
 ### Remaining scope and next action
 
-- Define and execute maintenance: small-files diagnostics/remediation, compaction, snapshot expiration and the specified scope of orphan-file cleanup.
-- Complete competency mapping, determine any missing incremental-predicate exercise and close AC-002 after the full scope is covered.
-- Use [the completion roadmap](bootstrap-time-travel.md#9-порядок-завершения-проекта) for sequencing. Time travel has no unfinished implementation task.
+No mandatory project task remains. Reproduction and read-only verification commands are in [README](../README.md#completion-and-verification); [the outcome matrix](learning-outcomes.md) maps every source competency to code, criteria and evidence. Branches/tags, CDC/orchestration and production security remain outside the agreed learning scope.
 
 ### Task-history conventions
 
@@ -1818,7 +1822,7 @@ none
 - Details: one fresh builtin read-only reviewer (read, grep, find, ls, watchdog_diff, contact_supervisor; no bash/write/edit; effective capabilities inspected) reviewed the complete 35-line append-only diff, spec/plan task boundaries, this section, prior-section preservation and AC evidence. VERDICT OK; no BLOCKER, DEFERRED or IMPROVEMENT. Python assertions, hashes, LSP and Git checks were supervisor evidence, not independently executed by the reviewer. Post-review SHA-256 matched the pre-review file; only permitted status/time/review/next-action finalization follows.
 
 ### Next action
-Completed and committed as `44eaef7`. TT-1 full acceptance is recorded under TT-IMP-006; remaining project scope is maintenance and AC-002 coverage.
+Completed and committed as `44eaef7`. Overall project completion is verified by `project_final_001`.
 
 ### Completion
 TT-AGENT-001 completed and committed as `44eaef7`.
@@ -1927,7 +1931,7 @@ TT-AGENT-001 completed and committed as `44eaef7`.
 - Details: first fresh builtin reviewer found B07/B08; after their reproduced fixes, a second fresh read-only reviewer inspected the complete two new Python files, full status addition and source/helper contracts. VERDICT OK for TT-ENV-001 only; no issues found. Both findings confirmed resolved. Toolset read, grep, find, ls, watchdog_diff, contact_supervisor; no bash/write/edit. Tests are supervisor evidence, not independently executed by reviewer. All three file hashes matched before/after each review; only permitted status/time/review/next-action finalization follows. No live or full-slice acceptance claimed.
 
 ### Next action
-Completed and committed as `75bbdcb`. TT-1 full acceptance is recorded under TT-IMP-006; remaining project scope is maintenance and AC-002 coverage.
+Completed and committed as `75bbdcb`. Overall project completion is verified by `project_final_001`.
 
 ### Live completion on 2026-11-02
 
@@ -1958,7 +1962,7 @@ Unit discovery: 88/88 PASS. Live tt_env002_live2: CHECKPOINT, AC-028 PASS, remai
 - Codex direct source/diff verification and recorded tests; no pi reviewer invocation is claimed. User authorized sequential execution and commits on 2026-11-02.
 
 ### Next action
-Completed and committed as `39f806c`. TT-1 full acceptance is recorded under TT-IMP-006; remaining project scope is maintenance and AC-002 coverage.
+Completed and committed as `39f806c`. Overall project completion is verified by `project_final_001`.
 
 ### Completion
 TT-ENV-002 completed and committed as `39f806c`.
@@ -1981,7 +1985,7 @@ Unit discovery 90/90 PASS, including mutation tests for snapshots, parents, sche
 - Codex direct source/diff verification and recorded tests; no pi reviewer invocation is claimed. User authorized sequential execution and commits on 2026-11-02.
 
 ### Next action
-Completed and committed as `6988d7e`. TT-1 full acceptance is recorded under TT-IMP-006; remaining project scope is maintenance and AC-002 coverage.
+Completed and committed as `6988d7e`. Overall project completion is verified by `project_final_001`.
 
 ### Completion
 TT-PROBE-001 completed and committed as `6988d7e`.
@@ -2004,7 +2008,7 @@ Unit discovery 93/93 PASS. Live tt_staged_dev002 reached STAGE_PASS stage_h0: al
 - Codex direct source/diff verification and recorded tests; no pi reviewer invocation is claimed. User authorized sequential execution and commits on 2026-11-02.
 
 ### Next action
-Completed and committed as `e107c5f`. TT-1 full acceptance is recorded under TT-IMP-006; remaining project scope is maintenance and AC-002 coverage.
+Completed and committed as `e107c5f`. Overall project completion is verified by `project_final_001`.
 
 ### Completion
 TT-IMP-001 completed and committed as `e107c5f`.
@@ -2027,7 +2031,7 @@ Unit discovery 95/95 PASS, including rejection of swapped H0/H1/Hbad oracles and
 - Codex direct source/diff verification and recorded tests; no pi reviewer invocation is claimed. User authorized sequential execution and commits on 2026-11-02.
 
 ### Next action
-Completed and committed as `52fa272`. TT-1 full acceptance is recorded under TT-IMP-006; remaining project scope is maintenance and AC-002 coverage.
+Completed and committed as `52fa272`. Overall project completion is verified by `project_final_001`.
 
 ### Completion
 TT-IMP-002 completed and committed as `52fa272`.
@@ -2050,7 +2054,7 @@ Unit discovery 97/97 PASS, including ambiguous/insufficiently separated times an
 - Codex direct source/diff verification and recorded tests; no pi reviewer invocation is claimed. User authorized sequential execution and commits on 2026-11-02.
 
 ### Next action
-Completed and committed as `e304708`. TT-1 full acceptance is recorded under TT-IMP-006; remaining project scope is maintenance and AC-002 coverage.
+Completed and committed as `e304708`. Overall project completion is verified by `project_final_001`.
 
 ### Completion
 TT-IMP-003 completed and committed as `e304708`.
@@ -2073,7 +2077,7 @@ Unit discovery 100/100 PASS; negative tests reject successful operations, wrong 
 - Codex direct source/diff verification and recorded tests; no pi reviewer invocation is claimed. User authorized sequential execution and commits on 2026-11-02.
 
 ### Next action
-Completed and committed as `2b921b6`. TT-1 full acceptance is recorded under TT-IMP-006; remaining project scope is maintenance and AC-002 coverage.
+Completed and committed as `2b921b6`. Overall project completion is verified by `project_final_001`.
 
 ### Completion
 TT-IMP-004 completed and committed as `2b921b6`.
@@ -2096,7 +2100,7 @@ Unit discovery 100/100 PASS; rollback mutations include resized/new delete files
 - Codex direct source/diff verification and recorded tests; no pi reviewer invocation is claimed. User authorized sequential execution and commits on 2026-11-02.
 
 ### Next action
-Completed and committed as `53a139a`. TT-1 full acceptance is recorded under TT-IMP-006; remaining project scope is maintenance and AC-002 coverage.
+Completed and committed as `53a139a`. Overall project completion is verified by `project_final_001`.
 
 ### Completion
 TT-IMP-005 completed and committed as `53a139a`.
@@ -2119,7 +2123,7 @@ Fresh CLI python3 scripts/run_time_travel_acceptance.py --run-id tt_imp006_final
 - Codex direct source/diff verification and recorded tests; no pi reviewer invocation is claimed. User authorized sequential execution and commits on 2026-11-02.
 
 ### Next action
-Completed and committed as `1bf0c5a`. TT-1 full acceptance is recorded under TT-IMP-006; remaining project scope is maintenance and AC-002 coverage.
+Completed and committed as `1bf0c5a`. Overall project completion is verified by `project_final_001`.
 
 ### Completion
 TT-IMP-006 completed and committed as `1bf0c5a`.
@@ -2143,7 +2147,10 @@ Documentation matches tt_imp006_final PASS and implementation commit 1bf0c5a. Re
 - Codex direct source/diff verification and recorded tests; no pi reviewer invocation is claimed. User authorized sequential execution and commits on 2026-11-02.
 
 ### Next action
-Commit this documentation checkpoint. TT-1 is complete; maintenance and AC-002 remain in the project roadmap.
+Completed and committed as `c568502`. Overall project completion is verified by `project_final_001`.
+
+### Completion
+TT-DOC-001 completed and committed as `c568502`.
 
 ## TASK_ID: MA-SPEC-001
 
@@ -2163,7 +2170,10 @@ Primary pinned Trino 484 documentation confirms optimize, expiration retain_last
 Direct source/diff review and recorded checks; no independent pi reviewer invocation is claimed. The user authorized completion of all project tasks and per-stage commits.
 
 ### Next action
-Commit this completed stage and continue the project completion roadmap.
+Completed and committed as `08de2d7`. Overall project completion is verified by `project_final_001`.
+
+### Completion
+MA-SPEC-001 completed and committed as `08de2d7`.
 
 ## TASK_ID: MA-BOOT-001
 
@@ -2183,7 +2193,10 @@ All AC-034–AC-040 map to observable assertions; paths and CLI are identified a
 Direct source/diff review and recorded checks; no independent pi reviewer invocation is claimed. The user authorized completion of all project tasks and per-stage commits.
 
 ### Next action
-Commit this completed stage and continue the project completion roadmap.
+Completed and committed as `fffa423`. Overall project completion is verified by `project_final_001`.
+
+### Completion
+MA-BOOT-001 completed and committed as `fffa423`.
 
 ## TASK_ID: COV-001
 
@@ -2203,7 +2216,10 @@ docs/learning-outcomes.md contains exactly 14 mapped competencies and identifies
 Direct source/diff review and recorded checks; no independent pi reviewer invocation is claimed. The user authorized completion of all project tasks and per-stage commits.
 
 ### Next action
-Commit this completed stage and continue the project completion roadmap.
+Completed and committed as `3354297`. Overall project completion is verified by `project_final_001`.
+
+### Completion
+COV-001 completed and committed as `3354297`.
 
 ## TASK_ID: MA-ENV-001
 
@@ -2223,7 +2239,10 @@ Full unit discovery 108/108 PASS. Live ma_env001_live environment CHECKPOINT: AC
 Direct source/diff review and recorded checks; no independent pi reviewer invocation is claimed. The user authorized completion of all project tasks and per-stage commits.
 
 ### Next action
-Commit this completed stage and continue the project completion roadmap.
+Completed and committed as `274b587`. Overall project completion is verified by `project_final_001`.
+
+### Completion
+MA-ENV-001 completed and committed as `274b587`.
 
 ## TASK_ID: MA-IMP-001
 
@@ -2243,7 +2262,10 @@ Unit discovery 112/112 PASS. Live ma_staged_dev003: STAGE_PASS stage_fixture, 16
 Direct source/diff review and recorded checks; no independent pi reviewer invocation is claimed. The user authorized completion of all project tasks and per-stage commits.
 
 ### Next action
-Commit this completed stage and continue the project completion roadmap.
+Completed and committed as `98a6d87`. Overall project completion is verified by `project_final_001`.
+
+### Completion
+MA-IMP-001 completed and committed as `98a6d87`.
 
 ## TASK_ID: MA-IMP-002
 
@@ -2263,7 +2285,10 @@ Unit discovery 115/115 PASS. Live ma_staged_dev003 STAGE_PASS stage_compaction: 
 Direct source/diff review and recorded checks; no independent pi reviewer invocation is claimed. The user authorized completion of all project tasks and per-stage commits.
 
 ### Next action
-Commit this completed stage and continue the project completion roadmap.
+Completed and committed as `2c5d2db`. Overall project completion is verified by `project_final_001`.
+
+### Completion
+MA-IMP-002 completed and committed as `2c5d2db`.
 
 ## TASK_ID: MA-IMP-003
 
@@ -2283,7 +2308,10 @@ Unit discovery 118/118 PASS. Live ma_staged_dev004 STAGE_PASS stage_expiration: 
 Direct source/diff review and recorded checks; no independent pi reviewer invocation is claimed. The user authorized completion of all project tasks and per-stage commits.
 
 ### Next action
-Commit this completed stage and continue the project completion roadmap.
+Completed and committed as `3039c96`. Overall project completion is verified by `project_final_001`.
+
+### Completion
+MA-IMP-003 completed and committed as `3039c96`.
 
 ## TASK_ID: MA-IMP-004
 
@@ -2303,7 +2331,10 @@ Unit discovery 120/120 PASS. Live ma_staged_dev004 STAGE_PASS stage_orphan: old 
 Direct source/diff review and recorded checks; no independent pi reviewer invocation is claimed. The user authorized completion of all project tasks and per-stage commits.
 
 ### Next action
-Commit this completed stage and continue the project completion roadmap.
+Completed and committed as `58ac93c`. Overall project completion is verified by `project_final_001`.
+
+### Completion
+MA-IMP-004 completed and committed as `58ac93c`.
 
 ## TASK_ID: MA-IMP-005
 
@@ -2323,7 +2354,10 @@ Fresh ma_imp005_final CLI exits 0: AC-034–AC-040 all PASS, error null, 233 com
 Direct source/diff review and recorded checks; no independent pi reviewer invocation is claimed. The user authorized completion of all project tasks and per-stage commits.
 
 ### Next action
-Commit this completed stage and continue the project completion roadmap.
+Completed and committed as `8cb10ad`. Overall project completion is verified by `project_final_001`.
+
+### Completion
+MA-IMP-005 completed and committed as `8cb10ad`.
 
 ## TASK_ID: MA-DOC-001
 
@@ -2343,7 +2377,10 @@ README statements match ma_imp005_final PASS; 120 unit tests and session-only re
 Direct source/diff review and recorded checks; no independent pi reviewer invocation is claimed. The user authorized completion of all project tasks and per-stage commits.
 
 ### Next action
-Commit this completed stage and continue the project completion roadmap.
+Completed and committed as `ff51719`. Overall project completion is verified by `project_final_001`.
+
+### Completion
+MA-DOC-001 completed and committed as `ff51719`.
 
 ## TASK_ID: INC-SPEC-001
 
@@ -2363,7 +2400,10 @@ Fixture expectations fixed before runtime: initial 5 rows, final/replay/full-ref
 Direct source/diff review and recorded checks; no independent pi reviewer invocation is claimed. The user authorized completion of all project tasks and per-stage commits.
 
 ### Next action
-Commit this completed stage and continue the project completion roadmap.
+Completed and committed as `394edda`. Overall project completion is verified by `project_final_001`.
+
+### Completion
+INC-SPEC-001 completed and committed as `394edda`.
 
 ## TASK_ID: INC-IMP-001
 
@@ -2383,7 +2423,10 @@ Fresh inc_imp001_final2 CLI exits 0: AC-041–AC-045 all PASS, error null, 128 c
 Direct source/diff review and recorded checks; no independent pi reviewer invocation is claimed. The user authorized completion of all project tasks and per-stage commits.
 
 ### Next action
-Commit this completed stage and continue the project completion roadmap.
+Completed and committed as `57d0d97`. Overall project completion is verified by `project_final_001`.
+
+### Completion
+INC-IMP-001 completed and committed as `57d0d97`.
 
 ## TASK_ID: FINAL-001
 
@@ -2403,4 +2446,27 @@ All six functional slices have PASS with every assigned AC; incremental final2 c
 Direct source/diff review and recorded checks; no independent pi reviewer invocation is claimed. The user authorized completion of all project tasks and per-stage commits.
 
 ### Next action
-Commit this completed stage and continue the project completion roadmap.
+Completed and committed as `c06ccbd`. Overall project completion is verified by `project_final_001`.
+
+### Completion
+FINAL-001 completed and committed as `c06ccbd`.
+
+## TASK_ID: FINAL-002
+
+- Source: [Completion roadmap](bootstrap-time-travel.md) §9; [specification](spec.md) §13–14.
+- Status: DONE
+- Updated: 2026-11-02T18:01:10+03:00
+- Baseline HEAD: c06ccbd7c1bc7374c873ec0fe4f3696793d46e8e
+
+### Progress
+- Implemented: Implemented independent project-completion auditor, exact slice/criterion aggregation, 14-competency gate, raw evidence replay, complete manifest/hash validation, frozen implementation and append-only specification checks, plus optional live Docker cleanup audit. Reconciled README/status/roadmap with full project completion.
+- Remaining: none within this stage.
+
+### AC evidence
+project_final_001: PASS, AC-001–AC-045 all PASS including AC-002, six accepted slices and 14 competencies. All 3559 files across six manifests validate; 66 completed implementation files are byte-identical to c568502, original idea unchanged and older contract prefixes preserved. Raw TT/maintenance/incremental replay passes; no task-owned containers/networks remain, named volumes preserved. Unit discovery 126/126 PASS, including missing slice/AC/competency, CHECKPOINT, failure and cleanup-error rejection. All mandatory project tasks are complete; final documentation gate verifies 56 unique DONE records and links.
+
+### Review
+Direct source/diff review and recorded checks; no independent pi reviewer invocation is claimed. The user authorized completion of all project tasks and per-stage commits.
+
+### Next action
+Completed in this final audit/documentation checkpoint. project_final_001 verifies all project criteria and competencies; no mandatory work remains.

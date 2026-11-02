@@ -2,11 +2,11 @@
 
 A hands-on project for learning lakehouse architecture through a small logistics domain. You will start a local stack, load deterministic delivery events, and transform raw data into tested analytical models.
 
-Five learning slices are **implemented and committed**: the core lakehouse, schema evolution, partitioning/file pruning, time travel/rollback, and maintenance. Each has a passing end-to-end acceptance run. Incremental-predicate coverage and AC-002 remain open.
+All six learning slices are **implemented, tested and committed**: core lakehouse, schema evolution, partitioning/file pruning, time travel/rollback, maintenance, and incremental predicates. The completion audit passes **AC-001–AC-045**, including all **14 learning competencies (AC-002)**.
 
 ## Project status
 
-Status reconciled on **2026-11-02**, through Time travel implementation commit `1bf0c5a`.
+Status reconciled on **2026-11-02**, through incremental implementation commit `57d0d97` and completion audit `project_final_001`.
 
 | Completed slice | Verified scope | Retained acceptance evidence |
 |---|---|---|
@@ -14,10 +14,10 @@ Status reconciled on **2026-11-02**, through Time travel implementation commit `
 | **Schema evolution** | Metadata-only add/rename/type widening; old-file reads; writer compatibility; typed S0/S1 historical projections; rejected narrowing without partial changes; core regression. | `seimp006_final2` — PASS, 2026-10-30; AC-013–AC-020. |
 | **Partitioning / file pruning** | Balanced and skewed datasets of 256,000 rows each; eight U/D/R/DR tables; 52 query/layout cases with exact results, plans, file inventories, and physical-input evidence. | `pfimp006_final` — PASS, 2026-11-01; AC-021–AC-027. |
 | **Time travel / rollback** | Real staged H0/H1/Hbad; three ID reads and five UTC timestamp cases; three atomic negative operations; rollback preserving historical data/delete files; final baseline build and isolated cleanup. | `tt_imp006_final` — PASS, 2026-11-02; AC-028–AC-033. |
-
 | **Maintenance** | Small-files diagnostics, compaction, safe two-snapshot expiration, age/location-bounded orphan cleanup, session retention and complete evidence/cleanup. | `ma_imp005_final` — PASS, 2026-11-02; AC-034–AC-040. |
+| **Incremental predicates** | Real dbt merge, independent full rebuild, late/duplicate events, replay/full-refresh, source/target counterexamples and scan evidence. | `inc_imp001_final2` — PASS, 2026-11-02; AC-041–AC-045. |
 
-Run directories are under `artifacts/acceptance/` and are ignored by Git; they are local evidence, not files supplied by a fresh clone. See [docs/status.md](docs/status.md) for task completion commits and detailed acceptance/review history. AC-002 (full learning-outcome coverage) remains open until the remaining scope is implemented.
+Run directories are under `artifacts/acceptance/` and are ignored by Git; they are local evidence, not files supplied by a fresh clone. See [docs/status.md](docs/status.md) for task completion commits and detailed acceptance/review history. AC-002 is verified by [the 14-competency matrix](docs/learning-outcomes.md) and the independent completion audit.
 
 ## What you will learn
 
@@ -303,9 +303,21 @@ Two default-retention calls must fail atomically. Only the individual maintenanc
 
 `ma_imp005_final` passed AC-034–AC-040 on 2026-11-02. Evidence includes file distributions, plans, catalog/S3 metadata, raw content hashes, retained/expired reads, marker ages and per-operation before/after bundles. All owned data is cleaned at the end, the initial stack state is restored and existing volumes are preserved. The smaller `--check-environment` mode returns CHECKPOINT and performs no data writes. See [the contract](docs/spec.md#13-maintenance) and [execution plan](docs/bootstrap-maintenance.md).
 
+### Incremental predicates
+
+```bash
+python3 scripts/run_incremental_acceptance.py --run-id learn_incremental
+```
+
+The standalone dbt project in `dbt/exercises/incremental/` uses the same pinned image/profile and one disposable schema. Core models keep their existing table materializations. The safe model applies a seven-day received_at window to incoming data and the target MERGE predicate, using event_id as unique_key. It preserves the older E0 target row and admits late E5 based on received_at.
+
+Initial data produces five rows. The second batch, its replay, a full refresh and the next incremental run all produce the same seven unique rows with amount sum 215, matching a separate full rebuild and independent Python oracle. Two intentionally wrong models make the failure modes visible: an event_at source filter loses E5 (six rows), and an event_at target predicate duplicates E1/E2 (nine rows, seven IDs). Positive dbt tests cover the safe/full models; the wrong models remain isolated counterexamples.
+
+`inc_imp001_final2` passed AC-041–AC-045. Saved actual MERGE and compiled source SQL, dbt results and IO/ANALYZE plans explain both predicates. After replay the source has 11 raw rows; six canonical IDs meet the window, while the target retains all seven IDs. The window assumes new arrivals satisfy the received_at bound; older received_at backfills require a separate full rebuild. Physical-byte or elapsed-time reduction is not a PASS threshold for this tiny unpartitioned dataset. Evidence is retained and task-owned data is removed after acceptance.
+
 ### Fast unit tests
 
-The suite runs without Docker and contains 120 positive and mutation tests across partitioning, Time travel and maintenance at this checkpoint:
+The suite runs without Docker and contains 126 positive and mutation tests across the acceptance helpers and completion auditor:
 
 ```bash
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/tests -v
@@ -331,6 +343,10 @@ scripts/run_time_travel_acceptance.py
                             staged historical reads, rollback, evidence and cleanup
 scripts/run_maintenance_acceptance.py
                             small files, compaction, expiration and orphan cleanup
+scripts/run_incremental_acceptance.py
+                            real dbt predicates, counterexamples and replay
+scripts/verify_project_completion.py
+                            reports, manifests, frozen contracts and AC-002
 scripts/learning_exercise.py shared isolated lifecycle/evidence adapter
 scripts/tests/              lakehouse acceptance helper unit tests
 docs/spec.md                approved contracts and full project scope
@@ -341,6 +357,9 @@ docs/bootstrap-partitioning-file-pruning.md
                             plan for the completed partitioning/pruning slice
 docs/bootstrap-time-travel.md
                             approved TT plan and project completion roadmap
+docs/bootstrap-maintenance.md
+                            maintenance execution plan
+docs/learning-outcomes.md    all 14 competencies and acceptance evidence
 docs/status.md              current completion summary and task evidence
 ```
 
@@ -381,9 +400,16 @@ docker compose down -v
 - [RustFS](https://docs.rustfs.com/)
 - [Docker Compose](https://docs.docker.com/compose/)
 
-## Remaining learning scope
+## Completion and verification
 
-- **Incremental predicates:** map this competency to a verifiable exercise; current core models remain table materializations. Any additional exercise is isolated from their frozen contracts.
-- **Full learning-outcome coverage (AC-002):** complete the matrix mapping all 14 competencies to exercises, criteria and applicable evidence after remaining gaps are closed.
+The agreed project scope is complete. The retained completion audit `project_final_001` verifies all 45 criteria, all 14 competencies, six accepted slice reports, 3559 manifest-covered evidence files, unchanged completed implementation/contracts and task-runtime cleanup. Every implementation stage has a separate commit; [docs/status.md](docs/status.md) records completion history.
 
-Time travel and maintenance are complete. Remaining work is sequenced in [the project completion roadmap](docs/bootstrap-time-travel.md#9-порядок-завершения-проекта); actual task completion is recorded in [docs/status.md](docs/status.md).
+Recheck the retained reports with a fresh report ID:
+
+```bash
+python3 scripts/verify_project_completion.py --run-id project_recheck_001 --check-docker
+```
+
+The audit checks the exact retained run IDs in the status table. On a fresh clone, first run each of the six documented acceptance runners using those run IDs; local evidence is Git-ignored. On an existing checkout, occupied run IDs are refused rather than overwritten. Omitting `--check-docker` uses retained cleanup evidence; the flag additionally checks that task-owned containers/networks are absent. Named volumes are intentionally preserved.
+
+Historical Specify/Bootstrap stopping points remain in the planning documents. Current completion is defined by this audit and [the outcome matrix](docs/learning-outcomes.md). Branches/tags, CDC/orchestration and production security remain outside the agreed learning scope.
