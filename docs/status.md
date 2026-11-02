@@ -2344,3 +2344,23 @@ Direct source/diff review and recorded checks; no independent pi reviewer invoca
 
 ### Next action
 Commit this completed stage and continue the project completion roadmap.
+
+## TASK_ID: INC-SPEC-001
+
+- Source: [Completion roadmap](bootstrap-time-travel.md) §9; [specification](spec.md) §13–14.
+- Status: DONE
+- Updated: 2026-11-02T17:46:16+03:00
+- Baseline HEAD: ff517197cb9cef9dabc8bdb077606b779e315174
+
+### Progress
+- Implemented: Specified independent dbt incremental project, seven-event typed oracle, received_at lookback, safe source/target predicates and exact missing-event/duplicate counterexamples. Added AC-041–AC-045 without changing root dbt models/config or earlier specification sections.
+- Remaining: none within this stage.
+
+### AC evidence
+Fixture expectations fixed before runtime: initial 5 rows, final/replay/full-refresh 7 rows (sum 215), narrow-source 6 missing E5, narrow-target 9 with duplicate E1/E2. Primary pinned adapter source confirms incremental_predicates participates in actual MERGE. No production/window SLA or core materialization change is introduced.
+
+### Review
+Direct source/diff review and recorded checks; no independent pi reviewer invocation is claimed. The user authorized completion of all project tasks and per-stage commits.
+
+### Next action
+Commit this completed stage and continue the project completion roadmap.

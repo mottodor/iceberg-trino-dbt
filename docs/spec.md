@@ -1258,3 +1258,51 @@ Workflow использует новый run ID и сохраняет evidence �
 Run artifacts — только `artifacts/acceptance/<fresh_run_id>/`: SQL, typed rows, current metadata из Polaris и S3, snapshots/history, file inventories, raw content hashes, plans, operation metrics, marker ages, negative diagnostics и отдельные invariant comparisons. PASS только после cleanup и полноты evidence; промежуточные runs — CHECKPOINT. Полнота не определяется одним count или self-report.
 
 Первичный источник: [Trino 484 Iceberg connector](https://github.com/trinodb/trino/blob/484/docs/src/main/sphinx/connector/iceberg.md), `optimize`, `expire_snapshots`, `retain_last`, `remove_orphan_files` и session equivalents минимального retention. Проверено 2026-11-02; документация не заменяет runtime evidence.
+
+## 14. Incremental predicates
+
+### 14.1. Изолированное учебное задание
+
+Основание — competency «использовать incremental predicates осознанно», DEC-019 и поручение завершить все задачи проекта. Новый самостоятельный dbt project находится в `dbt/exercises/incremental/`; root `dbt_project.yml`, fixtures и core Bronze/Silver/Gold не изменяются. Он использует существующий pinned dbt-trino 1.10.2 и профиль, без новых зависимостей. Единственная owned schema — `<run_id>_incremental` с точным warehouse location. Runner — `scripts/run_incremental_acceptance.py`, общий lifecycle — `learning_exercise.py`.
+
+Вход `events_input`: event_id VARCHAR, event_at/received_at TIMESTAMP(3) WITH TIME ZONE, amount_units BIGINT, batch_number INTEGER. CSV этого упражнения отдельный; immutable payload одного event_id повторяется без конфликтующих исправлений. Canonical grain — event_id, дедупликация по received_at/batch_number. Независимый Python oracle задаётся до реализации; full-reference SQL не является единственным эталоном.
+
+### 14.2. Fixture и ожидаемые состояния
+
+| Batch | event_id | event_at UTC | received_at UTC | amount_units |
+|---|---|---|---|---:|
+| 1 | E0 | 2024-12-01 00:00 | 2024-12-01 00:00 | 5 |
+| 1 | E1 | 2025-01-01 00:00 | 2025-01-01 00:00 | 10 |
+| 1 | E2 | 2025-01-02 00:00 | 2025-01-02 00:00 | 20 |
+| 1 | E3 | 2025-01-03 00:00 | 2025-01-03 00:00 | 30 |
+| 1 | E4 | 2025-01-04 00:00 | 2025-01-04 00:00 | 40 |
+| 2 | E5 | 2025-01-01 12:00 | 2025-01-05 10:00 | 50 |
+| 2 | E6 | 2025-01-05 10:01 | 2025-01-05 10:01 | 60 |
+| 2 | E1 | Повтор без изменений | Повтор 2025-01-01 00:00 | 10 |
+
+После batch_1 все четыре модели содержат пять уникальных строк. После batch_2 корректный результат — E0–E6, семь строк, сумма amount_units=215. Replay batch_2 увеличивает raw rows до 11, но не меняет canonical семь строк. Full refresh и следующий incremental run дают тот же полный typed result set. Идемпотентность относится к строкам/grain, а не к отсутствию новых Iceberg commits.
+
+### 14.3. Source и target predicates
+
+Учебное processing_at — 2025-01-05 12:00 UTC. Нижняя граница равна началу processing day минус семь дней: 2024-12-29 00:00 UTC. Новые входные строки соответствуют этой received_at-window; данные с более старым received_at потребовали бы отдельного backfill/full refresh. Это явно ограниченный fixture contract, не production SLA.
+
+- `events_safe`: настоящий dbt incremental merge, unique_key=event_id. В is_incremental branch incoming filter использует received_at >= cutoff; incremental_predicates ограничивает DBT_INTERNAL_DEST.received_at тем же cutoff. E0 вне окна остаётся в target; E5 с ранним event_at и поздним received_at попадает в результат.
+- `events_full`: полная canonical пересборка для независимого comparison, дополнительно проверяемая Python oracle.
+- `events_narrow_source`: намеренно ошибочный incoming event_at >= 2025-01-03. После batch_2 ожидаются шесть строк без E5. Прочие строки неизменны.
+- `events_narrow_target`: incoming received_at-window корректен, но target predicate использует event_at >= 2025-01-03. Existing E1/E2 не участвуют в match и повторно INSERT: девять строк при семи distinct IDs, дубли именно E1/E2.
+
+Обе ошибочные модели — контролируемые контрпримеры внутри disposable schema. Их SQL должен успешно выполниться; неправильные результаты выявляются oracle/grain assertions, а не произвольным SQL failure. Positive dbt tests относятся к safe/full моделям.
+
+Сохраняются фактически executed MERGE и compiled incoming SQL из dbt artifacts, run_results, debug command evidence, EXPLAIN IO и ANALYZE для source/target received_at scans. После replay eligible distinct source IDs и target rows равны 6 из 7 canonical IDs. Physical input фиксируется, но уменьшение elapsed time или physical bytes не требуется: tiny unpartitioned files могут читаться целиком даже при правильном predicate.
+
+### 14.4. Критерии приёмки
+
+| AC | Условие PASS |
+|---|---|
+| AC-041 | Исходные завершённые модели/config/runners/контракты неизменны; все writes ограничены новой exact schema/location; foreign pointers/objects и volumes сохранены |
+| AC-042 | Реальные initial/incremental dbt runs дают 5/7 typed unique rows по независимому oracle и full rebuild; late E5 и старый E0 сохранены; replay/full-refresh/post-refresh incremental не меняют семь строк; positive dbt tests PASS |
+| AC-043 | Оба actual dbt counterexamples воспроизводят строго заданные missing E5 и duplicate E1/E2; случайная ошибка/другой дефект не засчитывается |
+| AC-044 | Actual MERGE содержит unique-key match и target received_at predicate, compiled source содержит dedup и received_at predicate; IO/analyze evidence и реальные eligible counts подтверждают границы; assumption lookback объяснено |
+| AC-045 | AC-041–044 PASS; actual dbt artifacts, typed results, snapshots, catalog/storage proofs полны; replay/manifest/secret scan успешны; cleanup и environment restoration проверены |
+
+Все 14 competencies закрываются только после AC-034–045 и финальной проверки AC-002. Первичные технические источники: [dbt-trino 1.10.2 incremental materialization](https://github.com/starburstdata/dbt-trino/blob/v1.10.2/dbt/include/trino/macros/materializations/incremental.sql) и [adapter table properties](https://github.com/starburstdata/dbt-trino/blob/v1.10.2/dbt/include/trino/macros/adapters.sql). Технические решения не меняют бизнес-контракты core.
