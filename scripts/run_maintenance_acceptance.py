@@ -74,6 +74,16 @@ def assert_retention_error(result) -> None:
     require(not any(token in message for token in ("connection refused", "syntax error", "mismatched input", "access denied")), "unrelated retention failure")
 
 
+def assert_orphan(before: dict[str, Any], after: dict[str, Any], old: str, young: str, outside: str) -> None:
+    same_table(before, after)
+    require(before["rows"] == after["rows"] and before["metadata"] == after["metadata"] and before["metadata_location"] == after["metadata_location"], "orphan cleanup changed table state")
+    require(old in before["objects"] and old not in after["objects"], "aged orphan was not removed")
+    require(young in after["objects"] and outside in after["objects"], "young or outside marker was deleted")
+    for key, digest in before["sha256"].items():
+        if key != old:
+            require(after["sha256"].get(key) == digest, "orphan cleanup changed referenced/outside content")
+
+
 class MaintenanceRun(LearningExercise):
     def rows_query(self, relation: str | None = None) -> str:
         return f"SELECT json_format(CAST(ARRAY[CAST(event_id AS JSON), CAST(route_id AS JSON), CAST(amount_units AS JSON)] AS JSON)) AS row_json FROM {relation or self.table} ORDER BY event_id"
@@ -93,12 +103,14 @@ class MaintenanceRun(LearningExercise):
             self.control_hashes = signature
         rows = self.query_csv(f"control/{len(self.commands)}.csv", f"SELECT token FROM {self.relation('control')}")
         require(rows == [["token"], ["unchanged"]], "control rows changed")
+        self.write_json("control/comparison.json", {"location": self.control_metadata["metadata"]["location"], "metadata_location": metadata["metadata-location"], "content_sha256": self.control_hashes, "unchanged": True})
 
     def stage_fixture(self) -> None:
         self.current_ac = "AC-035"
         self.create_schema(self.schema, "fixture/create_schema")
         self.sql("fixture/control", f"CREATE TABLE {self.relation('control')} AS SELECT 'unchanged' AS token")
         self.control_metadata = self.metadata(table="control")
+        self.write_json("control/metadata.json", self.control_metadata)
         for batch in range(16):
             start, end = batch * 128 + 1, (batch + 1) * 128
             select = f"SELECT i AS event_id, CAST('R' || CAST(i % 4 AS VARCHAR) AS VARCHAR) AS route_id, BIGINT '3' * i AS amount_units FROM UNNEST(sequence(BIGINT '{start}', BIGINT '{end}')) t(i)"
@@ -192,6 +204,47 @@ class MaintenanceRun(LearningExercise):
         self.after_expiration = after
         self.write_json("expiration/comparison.json", {"retained_ids": sorted(self.retained_ids), "expired_id": self.expired_id, "expired_read_returncode": result.returncode, "obsolete_data_removed": sorted(obsolete - set(after["objects"])), "current_rows": 2176, "historical_rows": 2048})
         self.ac_results["AC-037"] = "PASS"
+
+    def put_marker(self, key: str, name: str) -> None:
+        self.allowlist.require_object(key)
+        self.capture(["docker", "compose", "run", "--rm", "--no-deps", "--entrypoint", "sh", "bucket-setup", "-c", 'set -eu; printf "%s" "disposable orphan marker" >/tmp/marker; aws s3api put-object --bucket "$1" --key "$2" --body /tmp/marker --output json', "sh", BUCKET, key], f"orphan/{name}_put.json")
+
+    def head_marker(self, key: str, name: str) -> dict[str, Any]:
+        self.allowlist.require_object(key)
+        result = self.capture(["docker", "compose", "run", "--rm", "--no-deps", "--entrypoint", "aws", "bucket-setup", "s3api", "head-object", "--bucket", BUCKET, "--key", key, "--output", "json"], f"orphan/{name}_head.json")
+        return json.loads(result.stdout)
+
+    def stage_orphan(self) -> None:
+        self.current_ac = "AC-038"
+        self.retention_negative("remove_orphan_files", "10s")
+        prefix = self.after_expiration["metadata"]["location"].removeprefix(f"s3://{BUCKET}/").rstrip("/") + "/data/"
+        old, young = prefix + "exercise-aged-orphan.parquet", prefix + "exercise-young-orphan.parquet"
+        outside = f"warehouse/{self.schema}/outside-table/keep.txt"
+        require(not any(key in self.after_expiration["objects"] for key in (old, young, outside)), "orphan marker collision")
+        self.put_marker(old, "old")
+        self.put_marker(outside, "outside")
+        before = self.capture_state("before_orphan")
+        head = self.head_marker(old, "old")
+        modified = datetime.fromisoformat(head["LastModified"].replace("Z", "+00:00"))
+        age = (datetime.now(timezone.utc) - modified).total_seconds()
+        if age <= 11:
+            time.sleep(11 - age)
+        self.put_marker(young, "young")
+        young_head = self.head_marker(young, "young")
+        started = datetime.now(timezone.utc)
+        age = (started - modified).total_seconds()
+        young_modified = datetime.fromisoformat(young_head["LastModified"].replace("Z", "+00:00"))
+        young_age = (started - young_modified).total_seconds()
+        require(age > 10 and 0 <= young_age < 10, "marker ages do not distinguish orphan retention")
+        self.maintenance_command("remove_orphan_files", "10s", relax=True)
+        after = self.capture_state("after_orphan")
+        assert_orphan(before, after, old, young, outside)
+        self.verify_control(after)
+        require(self.retention_defaults("after_orphan") == self.defaults, "orphan session override leaked")
+        self.write_json("orphan/comparison.json", {"old_key": old, "young_key": young, "outside_key": outside, "operation_started_at": started.isoformat(), "old_age_seconds": age, "young_age_seconds": young_age, "retention_seconds": 10, "old_removed_only": True})
+        self.write_json("retention/comparison.json", {"ordinary_defaults": self.defaults, "unchanged": True, "session_only_overrides": True, "both_negative_guards": True})
+        self.ac_results["AC-038"] = "PASS"
+        self.ac_results["AC-039"] = "PASS"
 
     def workflow(self) -> None:
         raise AcceptanceError("maintenance behavioral stages are not implemented")

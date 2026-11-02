@@ -93,3 +93,34 @@ class ExpirationTests(unittest.TestCase):
         for code, message in [(0,"retention shorter minimum"),(1,"connection refused"),(1,"syntax error retention shorter minimum"),(1,"access denied retention shorter minimum")]:
             with self.assertRaises(AcceptanceError):
                 target.assert_retention_error(CommandResult([],code,0,"",message))
+
+
+class OrphanTests(unittest.TestCase):
+    def states(self):
+        before = {"metadata": {"table-uuid": "same"}, "metadata_location": "pointer", "rows": target.expected_rows(3), "objects": {"old": {}, "outside": {}, "retained": {}}, "sha256": {"old": "o", "outside": "x", "retained": "r"}}
+        after = copy.deepcopy(before)
+        del after["objects"]["old"]
+        del after["sha256"]["old"]
+        after["objects"]["young"] = {}
+        after["sha256"]["young"] = "y"
+        return before, after
+
+    def test_only_aged_orphan_is_removed(self):
+        before, after = self.states()
+        target.assert_orphan(before, after, "old", "young", "outside")
+
+    def test_missing_marker_or_retained_mutation_rejected(self):
+        before, after = self.states()
+        variants = []
+        for key in ("young", "outside"):
+            changed = copy.deepcopy(after)
+            del changed["objects"][key]
+            variants.append(changed)
+        changed = copy.deepcopy(after)
+        changed["sha256"]["retained"] = "changed"
+        variants.append(changed)
+        variants.append({**after, "rows": []})
+        variants.append({**after, "metadata_location": "changed"})
+        for value in variants:
+            with self.subTest(value=value.keys()), self.assertRaises(AcceptanceError):
+                target.assert_orphan(before, value, "old", "young", "outside")

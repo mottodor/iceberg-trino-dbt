@@ -2284,3 +2284,23 @@ Direct source/diff review and recorded checks; no independent pi reviewer invoca
 
 ### Next action
 Commit this completed stage and continue the project completion roadmap.
+
+## TASK_ID: MA-IMP-004
+
+- Source: [Completion roadmap](bootstrap-time-travel.md) §9; [specification](spec.md) §13–14.
+- Status: DONE
+- Updated: 2026-11-02T17:32:42+03:00
+- Baseline HEAD: 3039c961c8c65c0a950f67b63d3cb842708a2c98
+
+### Progress
+- Implemented: Implemented default orphan-retention rejection, real storage-age checks, old/young/outside markers and session-only orphan cleanup. All table/schema/history/current/control and referenced content remain unchanged; defaults are checked from ordinary sessions.
+- Remaining: none within this stage.
+
+### AC evidence
+Unit discovery 120/120 PASS. Live ma_staged_dev004 STAGE_PASS stage_orphan: old marker age 27.511 seconds removed, young marker age 3.511 seconds preserved under the 10-second threshold, outside-table marker and all other content hashes preserved. Both negative retention operations are atomic; defaults remain 7.00d. AC-038 and AC-039 PASS.
+
+### Review
+Direct source/diff review and recorded checks; no independent pi reviewer invocation is claimed. The user authorized completion of all project tasks and per-stage commits.
+
+### Next action
+Commit this completed stage and continue the project completion roadmap.
