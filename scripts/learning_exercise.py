@@ -18,6 +18,18 @@ from run_time_travel_acceptance import (
 )
 
 
+def canonical_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
+    # Polaris reserializes statistics from an internal map. Live 16-commit
+    # evidence contains identical entries in a different order. History,
+    # snapshots and schema field order remain significant and are preserved.
+    result = dict(metadata)
+    for name in ("statistics", "partition-statistics"):
+        if name in result:
+            require(isinstance(result[name], list), "malformed statistics metadata")
+            result[name] = sorted(result[name], key=lambda entry: json.dumps(entry, sort_keys=True))
+    return result
+
+
 @dataclass(frozen=True)
 class ExerciseAllowlist(TaskAllowlist):
     exercise: str
@@ -76,14 +88,16 @@ class LearningExercise(TimeTravelWorkflow):
     def snapshot(self, name: str, row_query: str) -> dict[str, Any]:
         base = f"states/{name}"
         loaded = self.metadata()
+        self.write_json(f"{base}/catalog_metadata.json", loaded)
         metadata = loaded.get("metadata")
         require(isinstance(metadata, dict), "catalog metadata is missing")
+        metadata = canonical_metadata(metadata)
         key = loaded.get("metadata-location", "").removeprefix(f"s3://{BUCKET}/")
         self.allowlist.require_object(key)
         objects = self.objects(self.schema)
         require(key in objects, "catalog pointer missing in storage")
         raw = self.capture(["docker", "compose", "run", "--rm", "--no-deps", "--entrypoint", "aws", "bucket-setup", "s3", "cp", f"s3://{BUCKET}/{key}", "-"], f"{base}/metadata.json").stdout
-        require(json.loads(raw) == metadata, "catalog/storage metadata mismatch")
+        require(canonical_metadata(json.loads(raw)) == metadata, "catalog/storage metadata mismatch")
         columns = self.query_csv(f"{base}/columns.csv", f"DESCRIBE {self.table}")
         snapshots = self.query_csv(f"{base}/snapshots.csv", f'SELECT * FROM "{CATALOG}"."{self.schema}"."{self.table_name}$snapshots" ORDER BY committed_at')
         history = self.query_csv(f"{base}/history.csv", f'SELECT * FROM "{CATALOG}"."{self.schema}"."{self.table_name}$history" ORDER BY made_current_at')

@@ -2224,3 +2224,23 @@ Direct source/diff review and recorded checks; no independent pi reviewer invoca
 
 ### Next action
 Commit this completed stage and continue the project completion roadmap.
+
+## TASK_ID: MA-IMP-001
+
+- Source: [Completion roadmap](bootstrap-time-travel.md) §9; [specification](spec.md) §13–14.
+- Status: DONE
+- Updated: 2026-11-02T17:13:53+03:00
+- Baseline HEAD: 274b587bdc7bfea7dfac230c949674c6305cb924
+
+### Progress
+- Implemented: Implemented independent typed maintenance oracle, real 16-commit/2048-row small-files workload, exact schema/grain checks, file size distribution, control signature and distributed/analyze plans. Catalog/S3 metadata comparison normalizes only unordered statistics arrays.
+- Remaining: none within this stage.
+
+### AC evidence
+Unit discovery 112/112 PASS. Live ma_staged_dev003: STAGE_PASS stage_fixture, 16 data snapshots, 16 current data files of 889–999 bytes, all 2048 rows match the independent oracle; AC-035 PASS. Prior runs preserved failures and restored their owned environment. Diagnostic copies prove only statistics entry order differs; mutation tests reject changed statistics content and changed history order.
+
+### Review
+Direct source/diff review and recorded checks; no independent pi reviewer invocation is claimed. The user authorized completion of all project tasks and per-stage commits.
+
+### Next action
+Commit this completed stage and continue the project completion roadmap.

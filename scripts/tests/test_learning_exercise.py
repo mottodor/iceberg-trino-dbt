@@ -7,11 +7,19 @@ from pathlib import Path
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from learning_exercise import ExerciseAllowlist, LearningExercise
+from learning_exercise import ExerciseAllowlist, LearningExercise, canonical_metadata
 from run_acceptance import AcceptanceError
 
 
 class SingleSchemaTests(unittest.TestCase):
+    def test_statistics_order_is_ignored_but_contents_and_history_are_not(self):
+        first = {"statistics": [{"snapshot-id": 3, "statistics-path": "a"}, {"snapshot-id": 1, "statistics-path": "b"}], "snapshot-log": [{"snapshot-id": 3}, {"snapshot-id": 1}]}
+        reordered = {**first, "statistics": list(reversed(first["statistics"]))}
+        self.assertEqual(canonical_metadata(first), canonical_metadata(reordered))
+        altered = {**first, "statistics": [{"snapshot-id": 3, "statistics-path": "wrong"}, first["statistics"][1]]}
+        self.assertNotEqual(canonical_metadata(first), canonical_metadata(altered))
+        self.assertNotEqual(canonical_metadata(first), canonical_metadata({**first, "snapshot-log": list(reversed(first["snapshot-log"]))}))
+
     def test_exact_schema_location_and_prefix(self):
         for kind in ("maintenance", "incremental"):
             allow = ExerciseAllowlist("exercise_001", kind)
