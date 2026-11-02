@@ -1788,7 +1788,7 @@ PF-IMP-006 is complete and committed as `88fc7db`. The partitioning/file-pruning
 ## TASK_ID: TT-AGENT-001
 
 - Source: [Time travel bootstrap plan](bootstrap-time-travel.md) §5, row “TT-AGENT-001 — работа агента”; [approved specification](spec.md) §12 (TT-1, DEC-034–DEC-040, AC-028–AC-033).
-- Status: REVIEW_READY
+- Status: DONE
 - Updated: 2026-11-01T17:35:41+03:00
 - Baseline HEAD: ca04d3915ac875f10cd7ab31ce10e62a03006a86
 
@@ -1818,4 +1818,117 @@ none
 - Details: one fresh builtin read-only reviewer (read, grep, find, ls, watchdog_diff, contact_supervisor; no bash/write/edit; effective capabilities inspected) reviewed the complete 35-line append-only diff, spec/plan task boundaries, this section, prior-section preservation and AC evidence. VERDICT OK; no BLOCKER, DEFERRED or IMPROVEMENT. Python assertions, hashes, LSP and Git checks were supervisor evidence, not independently executed by the reviewer. Post-review SHA-256 matched the pre-review file; only permitted status/time/review/next-action finalization follows.
 
 ### Next action
-User: inspect and approve the docs/status.md-only checkpoint; proposed commit message: `docs: record TT-AGENT-001 navigation and status`. No staging/commit or transition to another task has been performed.
+Completed and committed as `44eaef7`; reconciled with Git history on 2026-11-02. Next: complete TT-ENV-001.
+
+## TASK_ID: TT-ENV-001
+
+- Source: [Time travel bootstrap plan](bootstrap-time-travel.md) §5, row “TT-ENV-001 — среда и проверки”; [approved specification](spec.md) §12.5 step 1, §12.7–12.8.
+- Status: DONE
+- Updated: 2026-11-01T18:15:44+03:00
+- Baseline HEAD: 44eaef767158db2566e5cbc4e836dbc9bbaded2e
+
+### Progress
+- Implemented: new TT environment-only runner and simulated Docker lifecycle/ownership suite. Borrowed healthy default stack receives no stop/down/rm; own run-specific project pins container and full network IDs immediately after attempted up, including partial failure. Cleanup refuses identity drift and removes only pinned IDs, never volumes. Exact five-schema/object allowlist, catalog identity and local S3 storage contract are checked before verified_absent. No fixture/model/table writes are implemented. Live environment initial_stopped → initial_stopped; three pre-existing project/probe RustFS volumes remain present. No real lifecycle mutations, credentials or downloads performed.
+- Remaining: none within TT-ENV-001. Final targeted suite 28/28 and complete discovery 82/82 pass; active LSP two Python files clean; final AST/CLI/whitespace/immutable/scope gates pass. Authenticated live checkpoint was not run (no local credential set); simulated results are not live integration evidence. Full TT acceptance/evidence, staged data, snapshots/rollback and runtime object cleanup remain later tasks.
+
+### AC evidence
+| AC / ссылка на источник | Result | Проверка / evidence / причина |
+|---|---|---|
+| `docs/bootstrap-time-travel.md` §5 TT-ENV-001, reuse healthy stack or manage only own startup | PASS | standard (simulated engine, not live integration): `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/tests -p 'test_time_travel_acceptance.py' -v` exited 0, 28/28 in 0.055 seconds. Borrowed success/collision issue no lifecycle mutations; own startup pins Compose/project path and instance IDs, with no pulls/builds/recreate. Complete discovery `... discover -s scripts/tests -q` exited 0, 82/82 in 2.666 seconds. |
+| `docs/bootstrap-time-travel.md` §5 TT-ENV-001, allowlist before first write | PASS | standard: final 28-test suite verifies exact schemas/locations, prefix boundaries, schema/object collisions and malformed/truncated lists. Catalog fixture now matches pinned response; missing/foreign catalog name/type, S3 type/endpoints/region/path-style/allowed locations rejected before any SQL/object listing. B08 regression reproduced before fix and now passes. No table writes in ENV-001. |
+| `docs/bootstrap-time-travel.md` §5 TT-ENV-001, safe refusal / lifecycle restoration | PASS | standard: final 28-test suite includes same-label container-ID and same-name network-ID replacements; both refuse all cleanup mutation. Successful/partial startup persists ownership evidence; cleanup targets pinned full IDs only, never volumes. Also validates stopped/partial refusal, stop failure, evidence/resource collision, malformed inventory, symlink/path refusal and replay protection. fast: final AST/CLI/scope assertion exit 0 (0.287 seconds); explicit full-acceptance refusal exit 2, no evidence; LSP clean=2, zero diagnostics; whitespace/immutable/history preservation pass. |
+| `docs/spec.md` §12.9 AC-028 | NOT_RUN | Full exercise isolation belongs to later TT tasks. Task-scoped byte comparisons to HEAD pass for dbt/, docker/, infra/, Compose, old runners/tests, spec and plan. Existing status history is byte-identical to baseline; only this task section appended. |
+| `docs/spec.md` §12.9 AC-029 | NOT_RUN | Historical queries are outside TT-ENV-001. |
+| `docs/spec.md` §12.9 AC-030 | NOT_RUN | Rollback is outside TT-ENV-001. |
+| `docs/spec.md` §12.9 AC-031 | NOT_RUN | Negative snapshot SQL operations are outside TT-ENV-001. |
+| `docs/spec.md` §12.9 AC-032 | NOT_RUN | Staged source builds are outside TT-ENV-001. |
+| `docs/spec.md` §12.9 AC-033 | NOT_RUN | Full evidence/cleanup acceptance belongs to later TT tasks; no full-slice PASS intended. |
+
+### Issues
+#### TT-ENV-001/B01
+- State: RESOLVED
+- Category: CODE
+- Affects: TT-ENV-001 safe refusal / EVIDENCE_GATE
+- Problem: container inventory JSON parsing lacks an explicit malformed-input error boundary.
+- Evidence: post-write pi-lens blocker at scripts/run_time_travel_acceptance.py:185; json.loads can raise directly on malformed Docker output.
+- Unblock: primary agent adds fail-closed decoding and a malformed-inventory negative test.
+- Resolution: targeted 23-test suite exited 0; malformed JSON, array and null inventory cases all rejected as AcceptanceError. Active LSP probe: two Python paths clean.
+
+#### TT-ENV-001/B02
+- State: RESOLVED
+- Category: CODE
+- Affects: TT-ENV-001 allowlist preflight
+- Problem: initial checks assumed a wrapped catalog response and an explicit IsTruncated flag for empty storage listings, unlike retained pinned-stack evidence.
+- Evidence: pfimp006_final/runtime/polaris_catalog.json has top-level properties; seimp005_typed/cleanup/remaining_objects.json omits IsTruncated/Contents/KeyCount for an empty prefix. Initial implementation rejects both shapes.
+- Unblock: primary agent validates the observed response forms without accepting malformed or truncated listings; add positive and mutation tests.
+- Resolution: targeted 23-test suite exited 0; flat catalog properties and both empty-list forms accepted; missing/wrong Prefix, occupied/truncated listings and foreign catalog base rejected.
+
+#### TT-ENV-001/B03
+- State: RESOLVED
+- Category: TEST
+- Affects: task-scoped fast diagnostics
+- Problem: two query_csv test doubles do not preserve the method's named parameter signature.
+- Evidence: active LSP probe reports two Pyright reportAttributeAccessIssue errors at test_time_travel_acceptance.py:276,285; runner itself is clean.
+- Unblock: primary agent corrects test-double signatures and reruns diagnostics/tests.
+- Resolution: active LSP probe reports clean=2, zero diagnostics after named-parameter fixes; targeted suite subsequently passes.
+
+#### TT-ENV-001/B04
+- State: RESOLVED
+- Category: TEST
+- Affects: task-scoped lifecycle standard tests
+- Problem: fake Docker parses label filters at the first equals sign, treating existing containers as absent.
+- Evidence: targeted unittest run exited 1; 23 tests, 8 failures and 3 errors (0.040 seconds). Inspection shows label=com.docker.compose.project=NAME decoded as com.docker.compose.project=NAME rather than NAME, so lifecycle assertions cannot exercise the intended states.
+- Unblock: primary agent fixes the simulator to parse the final equals sign and reruns the affected suite; no real Docker lifecycle was invoked.
+- Resolution: corrected fake label decoding; targeted suite exited 0 (23/23, 0.051 seconds), then full discovery exited 0 (77/77, 2.516 seconds), including real command-shape assertions against the simulated engine.
+
+#### TT-ENV-001/B05
+- State: RESOLVED
+- Category: CODE
+- Affects: TT-ENV-001 safe refusal on repeated run
+- Problem: calling run twice on the same instance retains evidence_reserved=True and overwrites its successful checkpoint after the second preflight refuses the occupied directory.
+- Evidence: test_same_instance_cannot_overwrite_its_successful_checkpoint failed (exit 1, 0.005 seconds); byte comparison detects environment_checkpoint.json replaced with failure evidence.
+- Unblock: primary agent makes run instances single-use before entering any finalization path, then reruns the replay assertion and affected suite.
+- Resolution: single-use guard precedes all finalization; replay test preserves checkpoint bytes and command count. Final targeted suite passed 24/24 (0.050 seconds); full discovery passed 78/78 (2.338 seconds), exit 0.
+
+#### TT-ENV-001/B06
+- State: RESOLVED
+- Category: TEST
+- Affects: task-scoped standard suite
+- Problem: external-path/symlink test reuses its runner instance for two scenarios after run instances became single-use.
+- Evidence: targeted run exited 1 (24 tests, one failure, 0.043 seconds); full discovery also exited 1 (78 tests, one failure, 2.610 seconds). Expected canonical-path error is replaced by correct single-use refusal on the second scenario.
+- Unblock: primary agent uses a fresh runner for the second scenario, preserving both path-refusal assertions; rerun targeted before full discovery.
+- Resolution: fresh runner used for symlink scenario; final targeted 24/24 passed first, then full discovery 78/78 passed; both path checks retain expected canonical-path refusal and no Docker commands.
+
+#### TT-ENV-001/B07
+- State: RESOLVED
+- Category: CODE
+- Affects: TT-ENV-001 ownership/lifecycle safety
+- Problem: cleanup trusts current labels/hash rather than pinned startup container IDs and network identity, so replacement resources can be treated as owned.
+- Evidence: first fresh reviewer BLOCK; start_stack does not save IDs, while stop_stack deletes current inventory. Mutation changing only a container ID preserves all validation fields and reaches stop/rm. Network deletion similarly uses name, not pinned ID.
+- Unblock: primary agent pins container and network IDs after attempted up (including partial failure), refuses drift before cleanup, and adds ID-only replacement mutations.
+- Resolution: pre-fix `... -k replacement_container -v` reproduced failure (exit 1, 0.004 seconds). After pinning startup ownership in finally, container-ID and network-ID replacement tests reject before any stop/rm; partial up saves two IDs and cleanup succeeds. Targeted 28/28 and complete 82/82 pass, exit 0; Docker network CLI confirms --no-trunc support.
+
+#### TT-ENV-001/B08
+- State: RESOLVED
+- Category: CODE
+- Affects: TT-ENV-001 verified schema/object allowlist
+- Problem: catalog base location is checked without validating the storage backend used by that catalog.
+- Evidence: first fresh reviewer BLOCK; missing/foreign storageConfigInfo is accepted by assert_allowlist_absent, while object listing always uses local RustFS. Existing catalog bootstrap does not correct storage of a pre-existing catalog.
+- Unblock: primary agent checks catalog identity/S3 endpoints/path style/allowed locations against local warehouse and adds missing/foreign storage mutation tests.
+- Resolution: pre-fix `... -k catalog_storage -v` reproduced missing/foreign-storage acceptance (exit 1, 0.003 seconds). Pinned-response fixture and per-field missing/foreign mutations now reject before SQL/storage queries; positive real-form response remains accepted. Final 28/28 and 82/82 suites pass, exit 0.
+
+### Review
+- Verdict: OK
+- Calls: 2
+- Fix iterations: 1
+- Details: first fresh builtin reviewer found B07/B08; after their reproduced fixes, a second fresh read-only reviewer inspected the complete two new Python files, full status addition and source/helper contracts. VERDICT OK for TT-ENV-001 only; no issues found. Both findings confirmed resolved. Toolset read, grep, find, ls, watchdog_diff, contact_supervisor; no bash/write/edit. Tests are supervisor evidence, not independently executed by reviewer. All three file hashes matched before/after each review; only permitted status/time/review/next-action finalization follows. No live or full-slice acceptance claimed.
+
+### Next action
+The user explicitly authorized execution of the entire TT slice with a commit after each stage. This checkpoint is accepted for commit; next: TT-ENV-002.
+
+### Live completion on 2026-11-02
+
+- Authenticated `tt_env_live_004 --check-environment`: ENVIRONMENT_READY; exact five-prefix allowlist verified, own containers/network removed, all pre-existing volumes preserved. AC-028–AC-033 remain NOT_RUN.
+- Live runs exposed two defects absent from the simulator: Docker setup containers omit State.Health; healthy HTTP does not guarantee Trino SQL readiness. Safe map lookup and bounded retries only for the initializing diagnostic fix both. Added a regression that retries initialization but rejects connection errors immediately.
+- `tt_env_live_002` failed before ownership persistence; exact startup IDs from its command journal were validated and recorded in cleanup/recovered_ownership.json before removing only those resources. `tt_env_live_003` cleaned itself after SQL initialization failure. Failed evidence is retained.
+- Current Codex verification: full unit discovery 83 tests; live checkpoint. Earlier pi review applies to the original checkpoint; these live fixes were verified directly, without claiming a new pi reviewer invocation.
