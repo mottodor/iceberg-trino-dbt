@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 import json
 import statistics
 import time
@@ -54,6 +55,23 @@ def assert_compaction(before: dict[str, Any], after: dict[str, Any]) -> dict[str
         if "/data/" in key:
             require(after["sha256"].get(key) == digest, "compaction destroyed historical data")
     return {"before": old, "after": new, "rows_unchanged": True, "history_preserved": True}
+
+
+def assert_expiration(before: dict[str, Any], after: dict[str, Any], retained: set[int], obsolete: set[str]) -> None:
+    same_table(before, after)
+    assert_rows(after["rows"], 2176)
+    require(before["rows"] == after["rows"] and before["metadata"]["current-snapshot-id"] == after["metadata"]["current-snapshot-id"], "expiration changed current data/pointer")
+    snapshots = after["metadata"]["snapshots"]
+    require(len(snapshots) == 2 and {row["snapshot-id"] for row in snapshots} == retained, "expiration retained wrong snapshots")
+    for key in before["files"]:
+        require(after["sha256"].get(key) == before["sha256"][key], "expiration removed/changed retained data")
+    require(bool(obsolete) and bool(obsolete - set(after["objects"])), "expiration removed no obsolete data files")
+
+
+def assert_retention_error(result) -> None:
+    message = (result.stdout + result.stderr).lower()
+    require(result.returncode != 0 and "retention" in message and "minimum" in message and ("shorter" in message or "less" in message), "unrelated error cannot prove retention guard")
+    require(not any(token in message for token in ("connection refused", "syntax error", "mismatched input", "access denied")), "unrelated retention failure")
 
 
 class MaintenanceRun(LearningExercise):
@@ -117,6 +135,63 @@ class MaintenanceRun(LearningExercise):
         self.capture_plan("compacted")
         self.write_json("compaction/comparison.json", proof)
         self.ac_results["AC-036"] = "PASS"
+
+    def retention_defaults(self, name: str) -> dict[str, str]:
+        rows = self.query_csv(f"retention/{name}.csv", "SHOW SESSION LIKE 'lakehouse.%min_retention'")
+        result = {row[0]: row[1] for row in rows[1:]}
+        expected = {"lakehouse.expire_snapshots_min_retention", "lakehouse.remove_orphan_files_min_retention"}
+        require(set(result) == expected and all(re.fullmatch(r"7(?:\.0+)?d", value) for value in result.values()), "global retention defaults are not seven days")
+        return result
+
+    def maintenance_command(self, operation: str, retention: str, *, relax: bool):
+        require(operation in {"expire_snapshots", "remove_orphan_files"}, "unknown maintenance operation")
+        self.allowlist.require_schema(self.schema)
+        extra = ", retain_last => 2" if operation == "expire_snapshots" else ""
+        statement = f"ALTER TABLE {self.table} EXECUTE {operation}(retention_threshold => '{retention}'{extra})"
+        options = ["--session", f"{CATALOG}.{operation}_min_retention=0s"] if relax else []
+        name = f"retention/{operation}_{'session' if relax else 'default'}"
+        self.write_text(f"{name}.sql", statement + "\n")
+        return self.capture(["docker", "compose", "exec", "-T", "trino", "trino", *options, "--execute", statement], f"{name}.log", allowed_returncodes={0} if relax else {0, 1, 2})
+
+    def retention_negative(self, operation: str, retention: str) -> None:
+        before = self.capture_state(f"{operation}_negative_before")
+        result = self.maintenance_command(operation, retention, relax=False)
+        assert_retention_error(result)
+        require(self.capture_state(f"{operation}_negative_after") == before, "retention rejection changed state")
+        self.write_json(f"retention/{operation}_negative.json", {"returncode": result.returncode, "semantic_error": True, "unchanged": True})
+
+    def stage_expiration(self) -> None:
+        self.current_ac = "AC-037"
+        self.defaults = self.retention_defaults("before")
+        self.sql("expiration/retention_anchor", f"UPDATE {self.table} SET amount_units=amount_units WHERE event_id=1")
+        self.anchor = self.capture_state("retention_anchor")
+        same_table(self.compacted, self.anchor)
+        require(self.anchor["rows"] == self.compacted["rows"], "retention anchor changed compacted rows")
+        require(len(self.anchor["metadata"]["snapshots"]) == len(self.compacted["metadata"]["snapshots"]) + 1, "identity update did not create retention anchor")
+        anchor_id = self.anchor["metadata"]["current-snapshot-id"]
+        require(next(s for s in self.anchor["metadata"]["snapshots"] if s["snapshot-id"] == anchor_id).get("parent-snapshot-id") == self.compacted["metadata"]["current-snapshot-id"], "retention anchor parent mismatch")
+        self.sql("expiration/append", f"INSERT INTO {self.table} SELECT i, CAST('R' || CAST(i % 4 AS VARCHAR) AS VARCHAR), BIGINT '3' * i FROM UNNEST(sequence(BIGINT '2049', BIGINT '2176')) t(i)")
+        self.retention_negative("expire_snapshots", "1s")
+        before = self.capture_state("before_expiration")
+        assert_rows(before["rows"], 2176)
+        self.retained_ids = {self.anchor["metadata"]["current-snapshot-id"], before["metadata"]["current-snapshot-id"]}
+        require(len(self.retained_ids) == 2, "append did not create a child snapshot")
+        self.expired_id = self.fragmented["metadata"]["snapshots"][0]["snapshot-id"]
+        time.sleep(1.2)
+        self.maintenance_command("expire_snapshots", "1s", relax=True)
+        after = self.capture_state("after_expiration")
+        obsolete = set(self.fragmented["files"]) - set(before["files"])
+        assert_expiration(before, after, self.retained_ids, obsolete)
+        previous = self.anchor["metadata"]["current-snapshot-id"]
+        assert_rows(self.rows("expiration/retained_historical", self.rows_query(f"{self.table} FOR VERSION AS OF {previous}")), 2048)
+        result = self.capture(["docker", "compose", "exec", "-T", "trino", "trino", "--execute", f"SELECT * FROM {self.table} FOR VERSION AS OF {self.expired_id}"], "expiration/expired_read.log", allowed_returncodes={0, 1, 2})
+        assert_negative_result(result, "snapshot_read", self.expired_id)
+        require(self.capture_state("after_expired_read") == after, "expired read changed state")
+        self.verify_control(after)
+        require(self.retention_defaults("after_expiration") == self.defaults, "retention override leaked to another session")
+        self.after_expiration = after
+        self.write_json("expiration/comparison.json", {"retained_ids": sorted(self.retained_ids), "expired_id": self.expired_id, "expired_read_returncode": result.returncode, "obsolete_data_removed": sorted(obsolete - set(after["objects"])), "current_rows": 2176, "historical_rows": 2048})
+        self.ac_results["AC-037"] = "PASS"
 
     def workflow(self) -> None:
         raise AcceptanceError("maintenance behavioral stages are not implemented")

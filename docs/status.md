@@ -2264,3 +2264,23 @@ Direct source/diff review and recorded checks; no independent pi reviewer invoca
 
 ### Next action
 Commit this completed stage and continue the project completion roadmap.
+
+## TASK_ID: MA-IMP-003
+
+- Source: [Completion roadmap](bootstrap-time-travel.md) §9; [specification](spec.md) §13–14.
+- Status: DONE
+- Updated: 2026-11-02T17:26:44+03:00
+- Baseline HEAD: 2c5d2dbb6f163a099ca08a4efa216467fd8ffe1b
+
+### Progress
+- Implemented: Implemented default-retention atomic rejection, session-only expiration override, retained historical/current reads, expired-ID error checks and retained data/delete SHA-256 safety. Added an identical-row retention anchor so compaction deletion records can expire and physical obsolete data is actually reclaimed; recorded the live-driven sequence clarification in spec/bootstrap.
+- Remaining: none within this stage.
+
+### AC evidence
+Unit discovery 118/118 PASS. Live ma_staged_dev004 STAGE_PASS stage_expiration: exactly two retained snapshots, 2048 historical rows and 2176 current rows, all 16 obsolete small files physically removed, retained files/control unchanged, expired read semantic failure without mutation. Ordinary session defaults remain 7.00d. Prior ma_staged_dev003 demonstrated conservative GC while the deletion snapshot is retained; no reclamation assertion was suppressed.
+
+### Review
+Direct source/diff review and recorded checks; no independent pi reviewer invocation is claimed. The user authorized completion of all project tasks and per-stage commits.
+
+### Next action
+Commit this completed stage and continue the project completion roadmap.

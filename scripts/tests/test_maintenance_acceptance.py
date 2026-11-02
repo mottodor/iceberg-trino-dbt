@@ -62,3 +62,34 @@ class CompactionTests(unittest.TestCase):
         for value in variants:
             with self.subTest(value=value.keys()), self.assertRaises(AcceptanceError):
                 target.assert_compaction(before, value)
+
+
+class ExpirationTests(unittest.TestCase):
+    def states(self):
+        before = {"metadata": {"table-uuid": "same", "current-snapshot-id": 18, "snapshots": [{"snapshot-id": 16}, {"snapshot-id": 17}, {"snapshot-id": 18}]}, "rows": target.expected_rows(2176), "files": {"retained": {}}, "sha256": {"retained": "hash", "obsolete": "old"}, "objects": {"retained": {}, "obsolete": {}}}
+        after = copy.deepcopy(before)
+        after["metadata"]["snapshots"] = [{"snapshot-id": 17}, {"snapshot-id": 18}]
+        del after["objects"]["obsolete"]
+        del after["sha256"]["obsolete"]
+        return before, after
+
+    def test_two_retained_snapshots_and_obsolete_file_removal(self):
+        before, after = self.states()
+        target.assert_expiration(before, after, {17,18}, {"obsolete"})
+
+    def test_wrong_retention_data_loss_or_no_reclamation_rejected(self):
+        before, after = self.states()
+        variants = [{**after, "sha256": {}}, {**after, "rows": after["rows"][:-1]}, {**after, "objects": before["objects"]}]
+        changed = copy.deepcopy(after)
+        changed["metadata"]["snapshots"] = [{"snapshot-id": 18}]
+        variants.append(changed)
+        for value in variants:
+            with self.subTest(value=value.keys()), self.assertRaises(AcceptanceError):
+                target.assert_expiration(before, value, {17,18}, {"obsolete"})
+
+    def test_retention_negative_requires_semantic_error(self):
+        from run_acceptance import CommandResult
+        target.assert_retention_error(CommandResult([],1,0,"","Retention specified is shorter than minimum retention"))
+        for code, message in [(0,"retention shorter minimum"),(1,"connection refused"),(1,"syntax error retention shorter minimum"),(1,"access denied retention shorter minimum")]:
+            with self.assertRaises(AcceptanceError):
+                target.assert_retention_error(CommandResult([],code,0,"",message))

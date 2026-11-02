@@ -11,7 +11,7 @@
 | MA-ENV-001 | MA-BOOT-001 | Новый общий слой isolated exercise с точной одной schema/location; reuse проверенного TT lifecycle без изменения старых runners; mutation tests ownership/manifest/finalization |
 | MA-IMP-001 | MA-ENV-001 | CTAS + 15 INSERT: 2048 строк, 16 snapshots, минимум 16 файлов <1 MiB; typed oracle, size distribution, EXPLAIN ANALYZE |
 | MA-IMP-002 | MA-IMP-001 | optimize уменьшает current files минимум вдвое, строки и historical reads/checksums сохранены |
-| MA-IMP-003 | MA-IMP-002 | Append до 2176 строк; атомарный default-retention отказ; session-only override и retain_last=2; expired ID недоступен, оба retained читаются, obsolete data удалены |
+| MA-IMP-003 | MA-IMP-002 | Identity retention anchor сохраняет 2048 строк после compaction; append до 2176; атомарный default-retention отказ; session-only override и retain_last=2; expired ID недоступен, оба retained читаются, obsolete data удалены |
 | MA-IMP-004 | MA-IMP-003 | Атомарный default orphan-retention отказ; old/young/outside markers; aged marker удалён, все referenced файлы и остальные markers сохранены; defaults прежние |
 | MA-IMP-005 | MA-IMP-001–004 | Свежий полный CLI run, replay, все AC PASS, manifest/secret scan, cleanup/изоляция и restored environment |
 | MA-DOC-001 | MA-IMP-005 | README с фактическими командами, результатами и ограничениями retention; status сверяется с коммитами |
