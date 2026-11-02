@@ -2204,3 +2204,23 @@ Direct source/diff review and recorded checks; no independent pi reviewer invoca
 
 ### Next action
 Commit this completed stage and continue the project completion roadmap.
+
+## TASK_ID: MA-ENV-001
+
+- Source: [Completion roadmap](bootstrap-time-travel.md) §9; [specification](spec.md) §13–14.
+- Status: DONE
+- Updated: 2026-11-02T17:05:28+03:00
+- Baseline HEAD: 3354297452203e33dd53d7125803eba0325e29fe
+
+### Progress
+- Implemented: Implemented reusable single-schema exercise adapter over the unchanged TT lifecycle: exact allowlist, authoritative metadata/storage snapshots, raw content hashes, ownership-aware cleanup and explicit per-criterion final gates. Added no-blanket-PASS and cleanup-failure regressions.
+- Remaining: none within this stage.
+
+### AC evidence
+Full unit discovery 108/108 PASS. Live ma_env001_live environment CHECKPOINT: AC-034 PASS, remaining criteria NOT_RUN, no data writes, owned containers/network removed and pre-existing volumes preserved. The adapter normalizes cleanup evidence to its exact single prefix; final standalone runs verify frozen implementation and complete evidence.
+
+### Review
+Direct source/diff review and recorded checks; no independent pi reviewer invocation is claimed. The user authorized completion of all project tasks and per-stage commits.
+
+### Next action
+Commit this completed stage and continue the project completion roadmap.
