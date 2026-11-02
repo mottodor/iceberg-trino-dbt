@@ -594,6 +594,34 @@ class TimeTravelWorkflow(TimeTravelAcceptanceRun):
         require(self.h0["metadata"].get("format-version") == 2, "exercise requires Iceberg format v2")
         self.write_json("h0/comparison.json", {"staged_source_matches": True, "snapshot_id": self.ids[0]})
 
+    def stage_states(self) -> None:
+        self.load_fixtures(self.source_prefix, "baseline", "batch_2", "source/batch_2/load.log")
+        self.build_source("batch_2", full=True)
+        self.source_h1 = self.typed_rows("source/h1", self.source_table, source=True)
+        assert_rows(self.source_h1, "H1")
+        self.sql("h1/merge", f"""MERGE INTO {self.table} t USING
+            (SELECT {self.projection()} FROM {self.source_table} WHERE package_id='P3') s
+            ON t.package_id=s.package_id WHEN MATCHED THEN UPDATE SET
+            completed_visit_count=s.completed_visit_count,
+            completed_dwell_hours=s.completed_dwell_hours,
+            actual_to_planned_ratio=s.actual_to_planned_ratio""")
+        actual = self.typed_rows("h1/rows", self.table)
+        assert_rows(actual, "H1")
+        require(actual == self.source_h1, "H1 does not match staged Gold")
+        self.h1 = self.bundle("H1")
+        ids = snapshot_chain(self.h1["metadata"], 2)
+        require(ids[:1] == self.ids, "H0 replaced during H1 write")
+        self.sql("hbad/fault_injection", f"UPDATE {self.table} SET delivery_duration_hours=DOUBLE '360' WHERE package_id='P3'")
+        self.actual_hbad = self.typed_rows("hbad/rows", self.table)
+        assert_rows(self.actual_hbad, "Hbad")
+        require(self.typed_rows("source/after_fault", self.source_table, source=True) == self.source_h1, "fault injection changed source Gold")
+        self.hbad = self.bundle("Hbad")
+        self.ids = snapshot_chain(self.hbad["metadata"], 3)
+        require(self.ids[:2] == ids, "earlier snapshots replaced")
+        for key in ("table-uuid", "schemas", "current-schema-id", "partition-specs"):
+            require(self.h0["metadata"].get(key) == self.h1["metadata"].get(key) == self.hbad["metadata"].get(key), "table identity/schema changed between states")
+        self.write_json("states/comparison.json", {"snapshot_ids": self.ids, "single_table": True, "H1_source_valid": True, "only_fault": "P3 duration 36 -> 360"})
+
     def probe(self) -> None:
         started = time.monotonic()
         location = f"s3://{BUCKET}/warehouse/{self.schema}/"

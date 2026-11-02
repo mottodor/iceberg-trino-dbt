@@ -1992,3 +1992,23 @@ Unit discovery 93/93 PASS. Live tt_staged_dev002 reached STAGE_PASS stage_h0: al
 
 ### Next action
 Commit this completed stage, then continue the next dependency in the approved TT plan.
+
+## TASK_ID: TT-IMP-002
+
+- Source: [Time travel bootstrap](bootstrap-time-travel.md) §5–6; [spec](spec.md) §12.
+- Status: DONE
+- Updated: 2026-11-02T15:41:58+03:00
+- Baseline HEAD: e107c5fb12285e8b196d3ef5a9b8be050d11ce64
+
+### Progress
+- Implemented: Implemented batch_2 source build, one MERGE updating only the three P3 late-event metrics, and one UPDATE injecting duration 36 -> 360 in the educational table. Captured exactly H0 -> H1 -> Hbad, unchanged table UUID/schema and correct source Gold during the fault.
+- Remaining: none within this stage; final AC-028–AC-033 acceptance is recorded separately under TT-IMP-006.
+
+### AC evidence
+Unit discovery 95/95 PASS, including rejection of swapped H0/H1/Hbad oracles and oracle mutation isolation. Live tt_staged_dev002 reached STAGE_PASS stage_states; batch_2 dbt build passed 128/128 nodes. states/comparison.json binds three runtime IDs and parents; source/after_fault.json remains exact H1. Cleanup and overall acceptance remain TT-IMP-006 gates.
+
+### Review
+- Codex direct source/diff verification and recorded tests; no pi reviewer invocation is claimed. User authorized sequential execution and commits on 2026-11-02.
+
+### Next action
+Commit this completed stage, then continue the next dependency in the approved TT plan.

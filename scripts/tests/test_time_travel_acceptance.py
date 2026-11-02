@@ -567,6 +567,18 @@ class SnapshotInvariantTests(unittest.TestCase):
 
 
 class TypedOracleTests(unittest.TestCase):
+    def test_late_event_and_fault_states_cannot_be_interchanged(self):
+        for actual, wanted in [("H0", "H1"), ("H1", "H0"), ("Hbad", "H1"), ("H1", "Hbad")]:
+            with self.subTest(actual=actual, wanted=wanted), self.assertRaises(target.AcceptanceError):
+                target.assert_rows(target.expected_rows(actual), wanted)
+
+    def test_fault_expected_rows_do_not_mutate_other_oracles(self):
+        bad = target.expected_rows("Hbad")
+        bad[2][3] = -1
+        self.assertEqual(target.expected_rows("H0")[2][3], 36)
+        self.assertEqual(target.expected_rows("H1")[2][3], 36)
+        self.assertEqual(target.expected_rows("Hbad")[2][3], 360)
+
     def test_all_three_independent_expected_states(self):
         for label in ("H0", "H1", "Hbad"):
             target.assert_rows(target.expected_rows(label), label)
