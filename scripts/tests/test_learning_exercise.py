@@ -24,6 +24,12 @@ class SingleSchemaTests(unittest.TestCase):
             location = "s3://iceberg-trino-dbt/" + key
             digest = hashlib.sha256(raw).hexdigest()
             state = {"metadata": json.loads(raw), "metadata_location": location, "sha256": {key: digest}, "objects": {key: {"size": len(raw)}}, "files": {}, "rows": [[1]]}
+            for field in ("columns", "snapshots", "history"):
+                state[field] = [["header"]]
+                with (base / f"{field}.csv").open("w") as handle:
+                    csv.writer(handle).writerows(state[field])
+            with (base / "files.csv").open("w") as handle:
+                csv.writer(handle).writerow(["content", "file_path", "file_size_in_bytes", "record_count"])
             (base / "metadata.json").write_bytes(raw)
             (base / "catalog_metadata.json").write_text(json.dumps({"metadata": json.loads(raw), "metadata-location": location}))
             (base / "bundle.json").write_text(json.dumps(state))

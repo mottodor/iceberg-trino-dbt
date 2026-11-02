@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import re
 import json
 import statistics
@@ -11,8 +12,8 @@ from typing import Any
 from datetime import datetime, timezone
 from pathlib import Path
 
-from learning_exercise import LearningExercise
-from run_acceptance import BUCKET, CATALOG, DEFAULT_EVIDENCE_ROOT, AcceptanceError
+from learning_exercise import LearningExercise, verify_snapshot
+from run_acceptance import BUCKET, CATALOG, DEFAULT_EVIDENCE_ROOT, AcceptanceError, CommandResult
 from run_time_travel_acceptance import require, assert_negative_result
 
 
@@ -82,6 +83,78 @@ def assert_orphan(before: dict[str, Any], after: dict[str, Any], old: str, young
     for key, digest in before["sha256"].items():
         if key != old:
             require(after["sha256"].get(key) == digest, "orphan cleanup changed referenced/outside content")
+
+
+STATE_NAMES = ("fragmented", "before_compaction", "compacted", "retention_anchor",
+    "expire_snapshots_negative_before", "expire_snapshots_negative_after",
+    "before_expiration", "after_expiration", "after_expired_read",
+    "remove_orphan_files_negative_before", "remove_orphan_files_negative_after",
+    "before_orphan", "after_orphan", "final")
+
+
+def required_evidence() -> set[str]:
+    paths = {"fixture/comparison.json", "compaction/comparison.json", "compaction/historical.json",
+        "expiration/comparison.json", "expiration/retained_historical.json", "expiration/expired_read.log",
+        "orphan/comparison.json", "orphan/old_head.json", "orphan/young_head.json",
+        "retention/comparison.json", "control/comparison.json", "runtime/end_to_end.json", "runtime/catalog_tables.csv"}
+    for state in STATE_NAMES:
+        for name in ("bundle.json", "metadata.json", "catalog_metadata.json", "columns.csv", "snapshots.csv", "history.csv", "files.csv", "sha256.txt", "rows.csv", "rows.json"):
+            paths.add(f"states/{state}/{name}")
+    for kind in ("fragmented", "compacted"):
+        paths |= {f"plans/{kind}_distributed.txt", f"plans/{kind}_analyze.txt"}
+    for op in ("expire_snapshots", "remove_orphan_files"):
+        paths |= {f"retention/{op}_negative.json", f"retention/{op}_default.log", f"retention/{op}_session.log"}
+    return paths
+
+
+def verify_maintenance(root: Path) -> None:
+    def read(path):
+        return json.loads((root / path).read_text())
+
+    states = {name: verify_snapshot(root, name) for name in STATE_NAMES}
+    fragmented = states["fragmented"]
+    assert_rows(fragmented["rows"], 2048)
+    require(len(fragmented["metadata"]["snapshots"]) == 16, "saved fixture commit count mismatch")
+    stats = distribution(fragmented["files"])
+    require(stats["count"] >= 16 and stats["max"] < 1024**2, "saved small-files diagnostics invalid")
+    require(states["before_compaction"] == fragmented, "saved pre-compaction state drift")
+    assert_compaction(fragmented, states["compacted"])
+    require(read("compaction/historical.json") == fragmented["rows"], "saved historical rows lost")
+    require(states["retention_anchor"]["rows"] == fragmented["rows"], "saved retention anchor changed rows")
+    before, after = states["before_expiration"], states["after_expiration"]
+    retained = {states["retention_anchor"]["metadata"]["current-snapshot-id"], before["metadata"]["current-snapshot-id"]}
+    obsolete = set(fragmented["files"]) - set(before["files"])
+    assert_expiration(before, after, retained, obsolete)
+    require(states["after_expired_read"] == after, "saved expired read changed state")
+    assert_rows(read("expiration/retained_historical.json"), 2048)
+    expiry = read("expiration/comparison.json")
+    require(set(expiry["retained_ids"]) == retained and expiry["expired_id"] not in retained, "saved retained/expired mapping invalid")
+    def result(path, code):
+        stderr = root / f"{path}.stderr.log"
+        return CommandResult([], code, 0, (root/path).read_text(), stderr.read_text() if stderr.exists() else "")
+    assert_negative_result(result("expiration/expired_read.log", expiry["expired_read_returncode"]), "snapshot_read", expiry["expired_id"])
+    for operation in ("expire_snapshots", "remove_orphan_files"):
+        require(states[f"{operation}_negative_before"] == states[f"{operation}_negative_after"], "saved retention failure mutated state")
+        record = read(f"retention/{operation}_negative.json")
+        assert_retention_error(result(f"retention/{operation}_default.log", record["returncode"]))
+    orphan = read("orphan/comparison.json")
+    assert_orphan(states["before_orphan"], states["after_orphan"], orphan["old_key"], orphan["young_key"], orphan["outside_key"])
+    started = datetime.fromisoformat(orphan["operation_started_at"])
+    ages = []
+    for label in ("old", "young"):
+        modified = datetime.fromisoformat(read(f"orphan/{label}_head.json")["LastModified"].replace("Z", "+00:00"))
+        ages.append((started - modified).total_seconds())
+    require(ages[0] > 10 and 0 <= ages[1] < 10, "saved orphan age bounds invalid")
+    assert_rows(states["final"]["rows"], 2176)
+    control = read("control/comparison.json")
+    prefix = control["location"].removeprefix(f"s3://{BUCKET}/").rstrip("/") + "/"
+    for state in states.values():
+        require({key: digest for key, digest in state["sha256"].items() if key.startswith(prefix)} == control["content_sha256"], "saved control changed")
+    defaults = read("retention/comparison.json")["ordinary_defaults"]
+    for name in ("before", "after_expiration", "after_orphan", "final"):
+        with (root / f"retention/{name}.csv").open() as handle:
+            rows = list(csv.reader(handle))
+        require({row[0]: row[1] for row in rows[1:]} == defaults and all(re.fullmatch(r"7(?:\.0+)?d", v) for v in defaults.values()), "saved retention defaults changed")
 
 
 class MaintenanceRun(LearningExercise):
@@ -246,8 +319,26 @@ class MaintenanceRun(LearningExercise):
         self.ac_results["AC-038"] = "PASS"
         self.ac_results["AC-039"] = "PASS"
 
+    def stage_final_checks(self) -> None:
+        final = self.capture_state("final")
+        assert_rows(final["rows"], 2176)
+        self.verify_control(final)
+        require(self.retention_defaults("final") == self.defaults, "final global defaults changed")
+        tables = self.query_csv("runtime/catalog_tables.csv", f"SELECT table_name FROM {CATALOG}.information_schema.tables WHERE table_schema='{self.schema}' ORDER BY table_name")
+        require(tables == [["table_name"], ["control"], ["maintenance_events"]], "maintenance catalog listing mismatch")
+        rest = self.rest(f"{CATALOG}/namespaces/{self.schema}/tables")
+        require({item["name"] for item in rest.get("identifiers", [])} == {"control", "maintenance_events"}, "Polaris maintenance registration mismatch")
+        self.write_json("runtime/polaris_tables.json", rest)
+        require(any(key.endswith(".parquet") for key in final["objects"]) and any(key.endswith(".avro") for key in final["objects"]) and any(key.endswith(".metadata.json") for key in final["objects"]), "maintenance storage evidence incomplete")
+        self.write_json("runtime/end_to_end.json", {"registered_tables": 2, "current_rows": 2176, "retained_snapshots": 2, "catalog_storage_bound": True})
+
+    def verify_behavior(self, root: Path) -> None:
+        verify_maintenance(root)
+
     def workflow(self) -> None:
-        raise AcceptanceError("maintenance behavioral stages are not implemented")
+        for stage in (self.stage_fixture, self.stage_compaction, self.stage_expiration, self.stage_orphan, self.stage_final_checks):
+            print("Maintenance: " + stage.__name__, flush=True)
+            stage()
 
 
 def main() -> int:
@@ -257,7 +348,7 @@ def main() -> int:
     args = parser.parse_args()
     try:
         run = MaintenanceRun(args.run_id, DEFAULT_EVIDENCE_ROOT / args.run_id)
-        run.run((lambda: None) if args.check_environment else run.workflow, required=set(), complete=not args.check_environment)
+        run.run((lambda: None) if args.check_environment else run.workflow, required=set() if args.check_environment else required_evidence(), complete=not args.check_environment)
     except (AcceptanceError, OSError) as error:
         print(f"Maintenance failed: {error}")
         return 1

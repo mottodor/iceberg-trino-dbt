@@ -2304,3 +2304,23 @@ Direct source/diff review and recorded checks; no independent pi reviewer invoca
 
 ### Next action
 Commit this completed stage and continue the project completion roadmap.
+
+## TASK_ID: MA-IMP-005
+
+- Source: [Completion roadmap](bootstrap-time-travel.md) §9; [specification](spec.md) §13–14.
+- Status: DONE
+- Updated: 2026-11-02T17:44:46+03:00
+- Baseline HEAD: 58ac93c582b28b8ae4337e75b982793b1a81a4de
+
+### Progress
+- Implemented: Completed standalone maintenance CLI, full saved-snapshot/behavior replay, mandatory evidence list, exact catalog registrations, control proof, manifest/secret scan and single-schema cleanup/restoration gates. Old core/SE/PF/TT implementations remain unchanged.
+- Remaining: none within this stage.
+
+### AC evidence
+Fresh ma_imp005_final CLI exits 0: AC-034–AC-040 all PASS, error null, 233 commands; 16 small files compacted to one, two retained states of 2048/2176 rows, 16 obsolete files removed, age/location-bounded orphan deletion verified. Ordinary retention stays 7.00d, owned schema/object prefix empty, own containers/network removed and volumes preserved. Unit discovery 120/120 PASS; independent raw snapshot/behavior/manifest replay and frozen implementation hashes pass.
+
+### Review
+Direct source/diff review and recorded checks; no independent pi reviewer invocation is claimed. The user authorized completion of all project tasks and per-stage commits.
+
+### Next action
+Commit this completed stage and continue the project completion roadmap.

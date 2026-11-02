@@ -49,6 +49,18 @@ def verify_snapshot(root: Path, name: str) -> dict[str, Any]:
         require(item not in hashes, "duplicate saved content hash")
         hashes[item] = digest
     require(hashes == state["sha256"] and set(hashes) == set(state["objects"]), "saved object hashes/inventory mismatch")
+    for field in ("columns", "snapshots", "history"):
+        with (base / f"{field}.csv").open() as handle:
+            require(list(csv.reader(handle)) == state[field], f"saved {field} CSV mismatch")
+    with (base / "files.csv").open() as handle:
+        raw_files = list(csv.reader(handle))
+    require(raw_files[0] == ["content", "file_path", "file_size_in_bytes", "record_count"], "saved file inventory header mismatch")
+    bound_files = {}
+    for content, location, size, records in raw_files[1:]:
+        item = location.removeprefix(f"s3://{BUCKET}/")
+        require(item not in bound_files and item in hashes, "saved file inventory identity mismatch")
+        bound_files[item] = {"content": int(content), "size": int(size), "records": int(records), "sha256": hashes[item]}
+    require(bound_files == state["files"], "saved file CSV/bundle mismatch")
     for path, item in state["files"].items():
         require(item["size"] == state["objects"][path]["size"] and item["sha256"] == hashes[path], "saved file/storage binding mismatch")
     rows = json.loads((base / "rows.json").read_text())
