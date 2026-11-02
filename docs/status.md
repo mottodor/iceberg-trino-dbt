@@ -2364,3 +2364,23 @@ Direct source/diff review and recorded checks; no independent pi reviewer invoca
 
 ### Next action
 Commit this completed stage and continue the project completion roadmap.
+
+## TASK_ID: INC-IMP-001
+
+- Source: [Completion roadmap](bootstrap-time-travel.md) §9; [specification](spec.md) §13–14.
+- Status: DONE
+- Updated: 2026-11-02T17:57:29+03:00
+- Baseline HEAD: 394eddaf90d92c630140f65cfb4bcbeb29de7bb2
+
+### Progress
+- Implemented: Implemented standalone four-model dbt project with safe received_at incremental MERGE, full-reference model and exact narrow-source/narrow-target counterexamples. Added immutable fixture, positive dbt tests, replay/full-refresh checks, actual executed/compiled SQL, IO/ANALYZE plans and complete isolated evidence/cleanup.
+- Remaining: none within this stage.
+
+### AC evidence
+Fresh inc_imp001_final2 CLI exits 0: AC-041–AC-045 all PASS, error null, 128 commands, 327 evidence files and 82 mandatory paths verified. Initial 5 and final/replay/full-refresh 7 typed rows match independent oracle/full rebuild; sum=215. Counterexamples reproduce missing E5 and duplicate E1/E2 (9 rows, 7 IDs). Actual source scan reads 11 raw rows; target has 7 and predicates select 6. All six dbt steps and positive tests pass; saved snapshot/behavior/manifest replay and implementation hashes pass. Unit discovery 126/126 PASS. Prior final run correctly rejected the expected timestamp(3) type: pinned Iceberg maps TIMESTAMPTZ to timestamp(6); the storage mapping was corrected and timestamp values remain exact. Owned schema/data/containers/network are cleaned and volumes preserved.
+
+### Review
+Direct source/diff review and recorded checks; no independent pi reviewer invocation is claimed. The user authorized completion of all project tasks and per-stage commits.
+
+### Next action
+Commit this completed stage and continue the project completion roadmap.

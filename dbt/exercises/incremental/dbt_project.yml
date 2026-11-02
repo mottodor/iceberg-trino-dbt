@@ -1,0 +1,14 @@
+name: incremental_exercise
+version: 1.0.0
+config-version: 2
+profile: iceberg_trino_dbt
+model-paths: [models]
+macro-paths: [macros]
+models:
+  incremental_exercise:
+    +properties:
+      format: "'PARQUET'"
+      format_version: 2
+vars:
+  incremental_cutoff: '2024-12-29 00:00:00 UTC'
+  narrow_cutoff: '2025-01-03 00:00:00 UTC'

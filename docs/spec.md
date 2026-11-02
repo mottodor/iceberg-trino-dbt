@@ -1265,7 +1265,7 @@ Run artifacts — только `artifacts/acceptance/<fresh_run_id>/`: SQL, type
 
 Основание — competency «использовать incremental predicates осознанно», DEC-019 и поручение завершить все задачи проекта. Новый самостоятельный dbt project находится в `dbt/exercises/incremental/`; root `dbt_project.yml`, fixtures и core Bronze/Silver/Gold не изменяются. Он использует существующий pinned dbt-trino 1.10.2 и профиль, без новых зависимостей. Единственная owned schema — `<run_id>_incremental` с точным warehouse location. Runner — `scripts/run_incremental_acceptance.py`, общий lifecycle — `learning_exercise.py`.
 
-Вход `events_input`: event_id VARCHAR, event_at/received_at TIMESTAMP(3) WITH TIME ZONE, amount_units BIGINT, batch_number INTEGER. CSV этого упражнения отдельный; immutable payload одного event_id повторяется без конфликтующих исправлений. Canonical grain — event_id, дедупликация по received_at/batch_number. Независимый Python oracle задаётся до реализации; full-reference SQL не является единственным эталоном.
+Вход `events_input`: event_id VARCHAR, event_at/received_at TIMESTAMP(6) WITH TIME ZONE, amount_units BIGINT, batch_number INTEGER. CSV этого упражнения отдельный; immutable payload одного event_id повторяется без конфликтующих исправлений. Canonical grain — event_id, дедупликация по received_at/batch_number. Независимый Python oracle задаётся до реализации; full-reference SQL не является единственным эталоном.
 
 ### 14.2. Fixture и ожидаемые состояния
 

@@ -1,0 +1,20 @@
+version: 2
+sources:
+  - name: exercise
+    database: "{{ env_var('DBT_TRINO_CATALOG') }}"
+    schema: "{{ env_var('DBT_TRINO_SCHEMA') }}"
+    tables:
+      - name: events_input
+models:
+  - name: events_safe
+    columns:
+      - name: event_id
+        data_tests: [unique, not_null]
+      - name: amount_units
+        data_tests: [not_null]
+  - name: events_full
+    columns:
+      - name: event_id
+        data_tests: [unique, not_null]
+      - name: amount_units
+        data_tests: [not_null]
