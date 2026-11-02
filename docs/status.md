@@ -2,31 +2,31 @@
 
 ## Current project state
 
-- Reconciled: **2026-11-01**, against Git history through `88fc7db` and retained acceptance summaries.
-- **Three slices are implemented, reviewed, and committed. All 31 recorded tasks are DONE.**
-- Full-project completion is **not** claimed: dedicated time-travel and maintenance exercises, plus full learning-outcome coverage (AC-002), remain open.
-- This update changes documentation only. It does not rerun Docker acceptance, select a next slice, or perform a commit or push.
+- Reconciled: **2026-11-02**, through Time travel implementation commit `1bf0c5a` and the documentation checkpoint containing this update.
+- **Four slices are implemented, tested and committed. All 42 recorded tasks are DONE**, including TT-DOC-001 in this documentation checkpoint.
+- Full-project completion is not claimed: maintenance, verification of incremental-predicate coverage and full learning-outcome traceability (AC-002) remain open.
 
 | Completed slice | Recorded tasks | Final acceptance | Completion commit |
 |---|---|---|---|
 | Core lakehouse | PROBE-001–003, BOOT-ENV-001–003, IMP-001–007 (13) | `imp007_final5`: PASS, 2026-10-29; AC-001 and AC-003–AC-012 | `82b89ab` |
 | Schema evolution | SE-AGENT-001, SE-ENV-001, SE-IMP-001–006 (8) | `seimp006_final2`: PASS, 2026-10-30; AC-013–AC-020 | `25ff57e` |
 | Partitioning / file pruning | PART-PROBE-001–002, PF-ENV-001–002, PF-IMP-001–006 (10) | `pfimp006_final`: PASS, 2026-11-01; AC-021–AC-027 | `88fc7db` |
+| Time travel / rollback | TT-AGENT-001, TT-ENV-001–002, TT-PROBE-001, TT-IMP-001–006, TT-DOC-001 (11) | `tt_imp006_final`: PASS, 2026-11-02; AC-028–AC-033 | `1bf0c5a`; documentation follows in this checkpoint |
 
 ### Evidence and verification
 
-- Final summaries are retained locally at `artifacts/acceptance/<run-id>/acceptance_summary.json` for the three run IDs above. These directories are Git-ignored and are not supplied by a fresh clone.
-- All three summaries record `outcome=PASS`, `error=null`, and PASS for every AC assigned to their slice. Earlier intentionally incomplete checkpoint runs remain historical evidence, not overall slice PASS.
-- The partitioning/pruning helper suite was rechecked on 2026-11-01: `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/tests -v` — **54/54 PASS**, without Docker.
-- Detailed runtime, cleanup, review, and diagnostic limitations remain in the task records below; they are not replaced by a claim of fresh end-to-end verification.
-- The local `.env` workflow is committed in `2e5ad98`; create an untracked root `.env` from `.env.example` before running the documented workflows.
+- Final summaries are retained under `artifacts/acceptance/<run-id>/acceptance_summary.json`. These local, Git-ignored directories are not supplied by a fresh clone.
+- All four summaries record outcome PASS, error null and PASS for every criterion assigned to the slice. Environment/probe/staged CHECKPOINT runs are not full-slice PASS.
+- The final TT runner independently executes the full staged workflow from a fresh CLI invocation; saved behavior replay, complete manifest checks, secret scan, isolation, task-data cleanup and environment restoration all pass.
+- Unit discovery on 2026-11-02: **104/104 PASS** (54 partitioning and 50 Time travel tests). Each full TT baseline build passes **128/128 nodes**, 15 models and 113 tests.
+- Protected fixtures/models, old runners/tests, Compose, infrastructure, dependency files and approved spec are unchanged. Prior completed-slice acceptance remains applicable; no shared-path change required a full rerun of those workflows.
+- The local `.env` workflow is documented in README. Values remain local and are excluded from evidence; existing volumes are preserved.
 
 ### Remaining scope and next action
 
-- Specify and implement a dedicated time-travel slice beyond the completed S0/S1 schema-compatibility checks. Those historical reads do not constitute the broader timestamp/branches/tags/rollback exercise.
-- Specify and implement maintenance exercises: small-files diagnostics/remediation, snapshot expiration, orphan-file cleanup, and compaction.
-- Complete the full learning-outcome traceability matrix and AC-002 after the remaining exercises.
-- Next action: the user selects the next bounded slice. No implementation task is currently recorded as active or blocked.
+- Define and execute maintenance: small-files diagnostics/remediation, compaction, snapshot expiration and the specified scope of orphan-file cleanup.
+- Complete competency mapping, determine any missing incremental-predicate exercise and close AC-002 after the full scope is covered.
+- Use [the completion roadmap](bootstrap-time-travel.md#9-порядок-завершения-проекта) for sequencing. Time travel has no unfinished implementation task.
 
 ### Task-history conventions
 
@@ -1818,7 +1818,10 @@ none
 - Details: one fresh builtin read-only reviewer (read, grep, find, ls, watchdog_diff, contact_supervisor; no bash/write/edit; effective capabilities inspected) reviewed the complete 35-line append-only diff, spec/plan task boundaries, this section, prior-section preservation and AC evidence. VERDICT OK; no BLOCKER, DEFERRED or IMPROVEMENT. Python assertions, hashes, LSP and Git checks were supervisor evidence, not independently executed by the reviewer. Post-review SHA-256 matched the pre-review file; only permitted status/time/review/next-action finalization follows.
 
 ### Next action
-Completed and committed as `44eaef7`; reconciled with Git history on 2026-11-02. Next: complete TT-ENV-001.
+Completed and committed as `44eaef7`. TT-1 full acceptance is recorded under TT-IMP-006; remaining project scope is maintenance and AC-002 coverage.
+
+### Completion
+TT-AGENT-001 completed and committed as `44eaef7`.
 
 ## TASK_ID: TT-ENV-001
 
@@ -1924,7 +1927,7 @@ Completed and committed as `44eaef7`; reconciled with Git history on 2026-11-02.
 - Details: first fresh builtin reviewer found B07/B08; after their reproduced fixes, a second fresh read-only reviewer inspected the complete two new Python files, full status addition and source/helper contracts. VERDICT OK for TT-ENV-001 only; no issues found. Both findings confirmed resolved. Toolset read, grep, find, ls, watchdog_diff, contact_supervisor; no bash/write/edit. Tests are supervisor evidence, not independently executed by reviewer. All three file hashes matched before/after each review; only permitted status/time/review/next-action finalization follows. No live or full-slice acceptance claimed.
 
 ### Next action
-The user explicitly authorized execution of the entire TT slice with a commit after each stage. This checkpoint is accepted for commit; next: TT-ENV-002.
+Completed and committed as `75bbdcb`. TT-1 full acceptance is recorded under TT-IMP-006; remaining project scope is maintenance and AC-002 coverage.
 
 ### Live completion on 2026-11-02
 
@@ -1932,6 +1935,10 @@ The user explicitly authorized execution of the entire TT slice with a commit af
 - Live runs exposed two defects absent from the simulator: Docker setup containers omit State.Health; healthy HTTP does not guarantee Trino SQL readiness. Safe map lookup and bounded retries only for the initializing diagnostic fix both. Added a regression that retries initialization but rejects connection errors immediately.
 - `tt_env_live_002` failed before ownership persistence; exact startup IDs from its command journal were validated and recorded in cleanup/recovered_ownership.json before removing only those resources. `tt_env_live_003` cleaned itself after SQL initialization failure. Failed evidence is retained.
 - Current Codex verification: full unit discovery 83 tests; live checkpoint. Earlier pi review applies to the original checkpoint; these live fixes were verified directly, without claiming a new pi reviewer invocation.
+
+
+### Completion
+TT-ENV-001 completed and committed as `75bbdcb`.
 
 ## TASK_ID: TT-ENV-002
 
@@ -1951,7 +1958,10 @@ Unit discovery: 88/88 PASS. Live tt_env002_live2: CHECKPOINT, AC-028 PASS, remai
 - Codex direct source/diff verification and recorded tests; no pi reviewer invocation is claimed. User authorized sequential execution and commits on 2026-11-02.
 
 ### Next action
-Commit this completed stage, then continue the next dependency in the approved TT plan.
+Completed and committed as `39f806c`. TT-1 full acceptance is recorded under TT-IMP-006; remaining project scope is maintenance and AC-002 coverage.
+
+### Completion
+TT-ENV-002 completed and committed as `39f806c`.
 
 ## TASK_ID: TT-PROBE-001
 
@@ -1971,7 +1981,10 @@ Unit discovery 90/90 PASS, including mutation tests for snapshots, parents, sche
 - Codex direct source/diff verification and recorded tests; no pi reviewer invocation is claimed. User authorized sequential execution and commits on 2026-11-02.
 
 ### Next action
-Commit this completed stage, then continue the next dependency in the approved TT plan.
+Completed and committed as `6988d7e`. TT-1 full acceptance is recorded under TT-IMP-006; remaining project scope is maintenance and AC-002 coverage.
+
+### Completion
+TT-PROBE-001 completed and committed as `6988d7e`.
 
 ## TASK_ID: TT-IMP-001
 
@@ -1991,7 +2004,10 @@ Unit discovery 93/93 PASS. Live tt_staged_dev002 reached STAGE_PASS stage_h0: al
 - Codex direct source/diff verification and recorded tests; no pi reviewer invocation is claimed. User authorized sequential execution and commits on 2026-11-02.
 
 ### Next action
-Commit this completed stage, then continue the next dependency in the approved TT plan.
+Completed and committed as `e107c5f`. TT-1 full acceptance is recorded under TT-IMP-006; remaining project scope is maintenance and AC-002 coverage.
+
+### Completion
+TT-IMP-001 completed and committed as `e107c5f`.
 
 ## TASK_ID: TT-IMP-002
 
@@ -2011,7 +2027,10 @@ Unit discovery 95/95 PASS, including rejection of swapped H0/H1/Hbad oracles and
 - Codex direct source/diff verification and recorded tests; no pi reviewer invocation is claimed. User authorized sequential execution and commits on 2026-11-02.
 
 ### Next action
-Commit this completed stage, then continue the next dependency in the approved TT plan.
+Completed and committed as `52fa272`. TT-1 full acceptance is recorded under TT-IMP-006; remaining project scope is maintenance and AC-002 coverage.
+
+### Completion
+TT-IMP-002 completed and committed as `52fa272`.
 
 ## TASK_ID: TT-IMP-003
 
@@ -2031,7 +2050,10 @@ Unit discovery 97/97 PASS, including ambiguous/insufficiently separated times an
 - Codex direct source/diff verification and recorded tests; no pi reviewer invocation is claimed. User authorized sequential execution and commits on 2026-11-02.
 
 ### Next action
-Commit this completed stage, then continue the next dependency in the approved TT plan.
+Completed and committed as `e304708`. TT-1 full acceptance is recorded under TT-IMP-006; remaining project scope is maintenance and AC-002 coverage.
+
+### Completion
+TT-IMP-003 completed and committed as `e304708`.
 
 ## TASK_ID: TT-IMP-004
 
@@ -2051,7 +2073,10 @@ Unit discovery 100/100 PASS; negative tests reject successful operations, wrong 
 - Codex direct source/diff verification and recorded tests; no pi reviewer invocation is claimed. User authorized sequential execution and commits on 2026-11-02.
 
 ### Next action
-Commit this completed stage, then continue the next dependency in the approved TT plan.
+Completed and committed as `2b921b6`. TT-1 full acceptance is recorded under TT-IMP-006; remaining project scope is maintenance and AC-002 coverage.
+
+### Completion
+TT-IMP-004 completed and committed as `2b921b6`.
 
 ## TASK_ID: TT-IMP-005
 
@@ -2071,7 +2096,10 @@ Unit discovery 100/100 PASS; rollback mutations include resized/new delete files
 - Codex direct source/diff verification and recorded tests; no pi reviewer invocation is claimed. User authorized sequential execution and commits on 2026-11-02.
 
 ### Next action
-Commit this completed stage, then continue the next dependency in the approved TT plan.
+Completed and committed as `53a139a`. TT-1 full acceptance is recorded under TT-IMP-006; remaining project scope is maintenance and AC-002 coverage.
+
+### Completion
+TT-IMP-005 completed and committed as `53a139a`.
 
 ## TASK_ID: TT-IMP-006
 
@@ -2082,7 +2110,7 @@ Commit this completed stage, then continue the next dependency in the approved T
 
 ### Progress
 - Implemented: Completed standalone default CLI workflow, final source regression, exact catalog/storage evidence, ownership-aware cleanup, implementation/protected-file fingerprints, saved-behavior replay and full mandatory evidence gating. Added --probe alongside the preserved --check-environment mode; tightened cleanup against post-preflight schema collisions.
-- Remaining: none within this stage; final AC-028–AC-033 acceptance is recorded separately under TT-IMP-006.
+- Remaining: none; AC-028–AC-033 final acceptance is PASS.
 
 ### AC evidence
 Fresh CLI python3 scripts/run_time_travel_acceptance.py --run-id tt_imp006_final exited 0: outcome PASS, error null, AC-028–AC-033 all PASS, 267 commands in 518.621 seconds. Exactly three nonzero commands are the semantic negative operations. Both full dbt builds pass 128/128 nodes; source remains H1 and educational history survives the final rebuild. All five task schemas/prefixes empty; own containers/network absent; pre-existing volumes preserved. Saved-behavior replay and complete 973-file SHA-256 manifest verification pass; 161 mandatory behavior paths present, secret scan clean and all 62 protected files unchanged. Implementation/test fingerprints match final code. Unit discovery 104/104 PASS, including whole-evidence mutations, nested manifests and schema-ownership races. Independent post-run Docker checks confirm no final-project containers/networks remain.
@@ -2091,4 +2119,28 @@ Fresh CLI python3 scripts/run_time_travel_acceptance.py --run-id tt_imp006_final
 - Codex direct source/diff verification and recorded tests; no pi reviewer invocation is claimed. User authorized sequential execution and commits on 2026-11-02.
 
 ### Next action
-Commit this completed stage, then continue the next dependency in the approved TT plan.
+Completed and committed as `1bf0c5a`. TT-1 full acceptance is recorded under TT-IMP-006; remaining project scope is maintenance and AC-002 coverage.
+
+### Completion
+TT-IMP-006 completed and committed as `1bf0c5a`.
+
+
+## TASK_ID: TT-DOC-001
+
+- Source: [Time travel bootstrap](bootstrap-time-travel.md) §5–6; [spec](spec.md) §12.
+- Status: DONE
+- Updated: 2026-11-02T16:01:25+03:00
+- Baseline HEAD: 1bf0c5af95ce4a8fa86cfa73177022e007933689
+
+### Progress
+- Implemented: Documented completed TT-1 workflow, current CLI modes, P3 state transitions, saved evidence, cleanup behavior and remaining project scope. Reconciled all historical TT records with their actual per-stage commits; README and current status now report four completed slices.
+- Remaining: none; AC-028–AC-033 final acceptance is PASS.
+
+### AC evidence
+Documentation matches tt_imp006_final PASS and implementation commit 1bf0c5a. Recorded 104 unit tests, 128 nodes per full dbt build, AC-028–AC-033, live environment/probe distinctions and excluded branches/tags/post-rollback timestamp semantics. Relative links, task uniqueness/counts, unchanged core/SE/PF task history and git diff whitespace are checked in the final documentation gate.
+
+### Review
+- Codex direct source/diff verification and recorded tests; no pi reviewer invocation is claimed. User authorized sequential execution and commits on 2026-11-02.
+
+### Next action
+Commit this documentation checkpoint. TT-1 is complete; maintenance and AC-002 remain in the project roadmap.

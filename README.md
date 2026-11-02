@@ -2,17 +2,18 @@
 
 A hands-on project for learning lakehouse architecture through a small logistics domain. You will start a local stack, load deterministic delivery events, and transform raw data into tested analytical models.
 
-Three learning slices are **implemented, reviewed, and committed**: the core lakehouse, schema evolution, and partitioning/file pruning. Each has a passing end-to-end acceptance run. The full project scope is not yet complete; dedicated time-travel and maintenance exercises remain.
+Four learning slices are **implemented and committed**: the core lakehouse, schema evolution, partitioning/file pruning, and time travel/rollback. Each has a passing end-to-end acceptance run. Maintenance exercises and full learning-outcome coverage remain open.
 
 ## Project status
 
-Status reconciled on **2026-11-01**, through commit `88fc7db`.
+Status reconciled on **2026-11-02**, through Time travel implementation commit `1bf0c5a`.
 
 | Completed slice | Verified scope | Retained acceptance evidence |
 |---|---|---|
 | **Core lakehouse** | RustFS/Polaris/Trino/dbt stack; Bronze/Silver/Gold; SCD Type 2; duplicates and late events; DQ and reconciliation. | `imp007_final5` — PASS, 2026-10-29; AC-001 and AC-003–AC-012. |
 | **Schema evolution** | Metadata-only add/rename/type widening; old-file reads; writer compatibility; typed S0/S1 historical projections; rejected narrowing without partial changes; core regression. | `seimp006_final2` — PASS, 2026-10-30; AC-013–AC-020. |
 | **Partitioning / file pruning** | Balanced and skewed datasets of 256,000 rows each; eight U/D/R/DR tables; 52 query/layout cases with exact results, plans, file inventories, and physical-input evidence. | `pfimp006_final` — PASS, 2026-11-01; AC-021–AC-027. |
+| **Time travel / rollback** | Real staged H0/H1/Hbad; three ID reads and five UTC timestamp cases; three atomic negative operations; rollback preserving historical data/delete files; final baseline build and isolated cleanup. | `tt_imp006_final` — PASS, 2026-11-02; AC-028–AC-033. |
 
 Run directories are under `artifacts/acceptance/` and are ignored by Git; they are local evidence, not files supplied by a fresh clone. See [docs/status.md](docs/status.md) for task completion commits and detailed acceptance/review history. AC-002 (full learning-outcome coverage) remains open until the remaining scope is implemented.
 
@@ -26,7 +27,9 @@ Run directories are under `artifacts/acceptance/` and are ignored by Git; they a
 - how to model SCD Type 2 and an accumulating snapshot;
 - how to validate data with dbt tests and reconciliation checks;
 - how schema evolution preserves old data files and how historical snapshot schemas affect reads;
-- how partition layouts and skew affect pruning, using query plans and physical-input evidence rather than elapsed time alone.
+- how partition layouts and skew affect pruning, using query plans and physical-input evidence rather than elapsed time alone;
+- how historical reads differ from rollback, and commit time differs from business event time;
+- how to verify historical snapshots, rollback atomicity, and preservation of data/delete files.
 
 ## Architecture
 
@@ -254,9 +257,41 @@ python3 scripts/run_partitioning_file_pruning_acceptance.py --run-id learn_parti
 
 Each runner writes evidence under `artifacts/acceptance/<run-id>/`, including `acceptance_summary.json`, command records, an evidence manifest, and a secret scan. It cleans up task-owned schemas/object prefixes and restores the initial environment while preserving pre-existing Docker volumes. See the relevant summary's `outcome` and `ac_results`; intentionally incomplete historical checkpoint runs are not overall slice PASS results.
 
+### Time travel and rollback
+
+Run the complete TT-1 exercise with a fresh run ID:
+
+```bash
+python3 scripts/run_time_travel_acceptance.py --run-id learn_time_travel
+```
+
+The runner builds unchanged core models in isolated source schemas, first from batch_1 and then batch_2. One separate eight-column Iceberg v2 table retains three states:
+
+| P3 metric | H0 before late events | H1 after late events | Hbad after fault injection | Current after rollback |
+|---|---:|---:|---:|---:|
+| Delivery duration, hours | 36 | 36 | 360 | 36 |
+| Completed visits | 0 | 2 | 2 | 2 |
+| Completed dwell, hours | 0 | 3 | 3 | 3 |
+| Actual/planned distance | 1.0 | 1.5 | 1.5 | 1.5 |
+
+P1/P2/P4 remain unchanged. Snapshot IDs and millisecond UTC commit times come from runtime metadata. Before rollback, three snapshot-ID reads and five timestamp cases verify the saved states. Two unavailable-version reads and one invalid rollback must fail with the expected diagnostic and leave the full state unchanged. Rollback restores H1 while Hbad remains readable by ID, without a fourth data snapshot or new data/delete files. Both post-batch_2 and final baseline dbt builds pass all 128 nodes (15 models and 113 tests).
+
+Evidence under `artifacts/acceptance/<run-id>/` includes typed rows and SQL in `history/`, per-operation negative comparisons in `negative/`, rollback results in `rollback/`, and catalog metadata, object inventories and SHA-256 proofs in `states/`. The runner deletes its five training schemas and all their objects after the checks; use the saved SQL/results to inspect the completed exercise. Overall PASS requires AC-028–AC-033, evidence replay, a complete manifest, secret scan, isolation and environment restoration.
+
+Two smaller modes are also available, each using a fresh ID:
+
+```bash
+python3 scripts/run_time_travel_acceptance.py --run-id learn_tt_environment --check-environment
+python3 scripts/run_time_travel_acceptance.py --run-id learn_tt_probe --probe
+```
+
+The environment mode verifies lifecycle/allowlist and returns `ENVIRONMENT_READY`; it performs no fixture/model/table writes. The probe runs the bounded three-snapshot compatibility experiment and returns `CHECKPOINT`. Neither result is full TT acceptance. A healthy default stack is borrowed and left running; otherwise the runner manages only a new task-specific Compose project and removes its containers/network afterward. Named volumes are preserved. Existing evidence, occupied prefixes and unknown/partial default stacks are refused.
+
+Branches/tags, timestamp semantics after rollback and maintenance remain outside TT-1. See [the approved contract](docs/spec.md#12-новый-срез-time-travel-и-rollback) and [the bootstrap plan](docs/bootstrap-time-travel.md).
+
 ### Fast unit tests
 
-The partitioning/pruning helper suite runs without Docker. The current suite contains 54 positive and mutation tests:
+The suite runs without Docker and contains 104 positive and mutation tests: 54 partitioning/pruning tests and 50 Time travel tests:
 
 ```bash
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/tests -v
@@ -278,13 +313,17 @@ scripts/run_schema_evolution_acceptance.py
                             schema evolution and core regression
 scripts/run_partitioning_file_pruning_acceptance.py
                             partitioning/file-pruning benchmark
-scripts/tests/              partitioning/pruning helper unit tests
+scripts/run_time_travel_acceptance.py
+                            staged historical reads, rollback, evidence and cleanup
+scripts/tests/              partitioning/pruning and Time travel unit tests
 docs/spec.md                approved contracts and full project scope
 docs/bootstrap.md           plan for the completed core slice
 docs/bootstrap-schema-evolution.md
                             plan for the completed schema evolution slice
 docs/bootstrap-partitioning-file-pruning.md
                             plan for the completed partitioning/pruning slice
+docs/bootstrap-time-travel.md
+                            approved TT plan and project completion roadmap
 docs/status.md              current completion summary and task evidence
 ```
 
@@ -327,10 +366,8 @@ docker compose down -v
 
 ## Remaining learning scope
 
-The completed schema evolution and partitioning/file-pruning slices are available through the runners above. The remaining full-project scope still needs dedicated specification and implementation:
+- **Maintenance:** small-files diagnostics/remediation, compaction, snapshot expiration and a specified orphan-file cleanup exercise.
+- **Incremental predicates:** map this competency to a verifiable exercise; current core models remain table materializations. Any additional exercise is isolated from their frozen contracts.
+- **Full learning-outcome coverage (AC-002):** complete the matrix mapping all 14 competencies to exercises, criteria and applicable evidence after remaining gaps are closed.
 
-- **Time travel:** a broader exercise beyond the S0/S1 snapshot-schema compatibility checks already covered by schema evolution; timestamp-based reads, branches/tags, and rollback are outside that completed slice.
-- **Maintenance:** small-files diagnostics/remediation, snapshot expiration, orphan-file cleanup, and compaction.
-- **Full learning-outcome coverage (AC-002):** trace all required competencies to exercises and evidence after the remaining slices are complete.
-
-See `docs/spec.md` for scope boundaries. The next slice has not been selected or implemented by this documentation update.
+Time travel and rollback are complete under TT-1. Remaining work is sequenced in [the project completion roadmap](docs/bootstrap-time-travel.md#9-порядок-завершения-проекта); actual task completion is recorded in [docs/status.md](docs/status.md).
