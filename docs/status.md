@@ -2164,3 +2164,23 @@ Direct source/diff review and recorded checks; no independent pi reviewer invoca
 
 ### Next action
 Commit this completed stage and continue the project completion roadmap.
+
+## TASK_ID: MA-BOOT-001
+
+- Source: [Completion roadmap](bootstrap-time-travel.md) §9; [specification](spec.md) §13–14.
+- Status: DONE
+- Updated: 2026-11-02T17:01:20+03:00
+- Baseline HEAD: 08de2d7e9fde555a05d3fac2985fcc1bcd345a28
+
+### Progress
+- Implemented: Created maintenance bootstrap with nine sequential tasks, file scope, runtime boundaries, unit/live/final gates and fresh CLI acceptance plan.
+- Remaining: none within this stage.
+
+### AC evidence
+All AC-034–AC-040 map to observable assertions; paths and CLI are identified as implemented or proposed. Session-only retention and data ownership constraints follow spec §13. Documentation link/scope/whitespace checks pass.
+
+### Review
+Direct source/diff review and recorded checks; no independent pi reviewer invocation is claimed. The user authorized completion of all project tasks and per-stage commits.
+
+### Next action
+Commit this completed stage and continue the project completion roadmap.
