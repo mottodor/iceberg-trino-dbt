@@ -2384,3 +2384,23 @@ Direct source/diff review and recorded checks; no independent pi reviewer invoca
 
 ### Next action
 Commit this completed stage and continue the project completion roadmap.
+
+## TASK_ID: FINAL-001
+
+- Source: [Completion roadmap](bootstrap-time-travel.md) §9; [specification](spec.md) §13–14.
+- Status: DONE
+- Updated: 2026-11-02T17:57:32+03:00
+- Baseline HEAD: 57d0d9722e8eebdf4d0934df48842a2dd7ea4b8f
+
+### Progress
+- Implemented: Closed all 14 competency mappings with accepted core/SE/PF/TT/maintenance/incremental evidence and code paths. Added final completion navigation while preserving all earlier contract sections and the immutable idea.
+- Remaining: none within this stage.
+
+### AC evidence
+All six functional slices have PASS with every assigned AC; incremental final2 closes the last gap. Matrix rows 1–14 are unique and confirmed; source competencies remain unchanged. The independent completion validator requires all 44 behavioral/safety criteria plus complete evidence and derives AC-002 only when the full matrix is closed.
+
+### Review
+Direct source/diff review and recorded checks; no independent pi reviewer invocation is claimed. The user authorized completion of all project tasks and per-stage commits.
+
+### Next action
+Commit this completed stage and continue the project completion roadmap.

@@ -1306,3 +1306,9 @@ Run artifacts — только `artifacts/acceptance/<fresh_run_id>/`: SQL, type
 | AC-045 | AC-041–044 PASS; actual dbt artifacts, typed results, snapshots, catalog/storage proofs полны; replay/manifest/secret scan успешны; cleanup и environment restoration проверены |
 
 Все 14 competencies закрываются только после AC-034–045 и финальной проверки AC-002. Первичные технические источники: [dbt-trino 1.10.2 incremental materialization](https://github.com/starburstdata/dbt-trino/blob/v1.10.2/dbt/include/trino/macros/materializations/incremental.sql) и [adapter table properties](https://github.com/starburstdata/dbt-trino/blob/v1.10.2/dbt/include/trino/macros/adapters.sql). Технические решения не меняют бизнес-контракты core.
+
+## 15. Проверка завершения проекта
+
+Полный scope включает шесть принятых упражнений и 14 компетенций из неизменённой idea. AC-002 проверяется [матрицей результатов](learning-outcomes.md) и `scripts/verify_project_completion.py`: нужны применимые PASS всех AC-001–AC-045, все шесть retained reports и их полный SHA-256 manifest, raw TT/maintenance/incremental replay, unchanged старый runtime boundary и successful cleanup. Branches/tags, CDC, orchestration и production security не добавляются к исходному scope.
+
+Текущая реализация и фактические результаты находятся в README и docs/status.md; исторические точки остановки предыдущих Specify/Bootstrap этапов выше сохраняются как история согласований. Финальная проверка не выполняет data writes и не заменяет отсутствующую приёмку самоотчётом.
