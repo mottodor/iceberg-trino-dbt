@@ -1,415 +1,79 @@
 # Iceberg + Trino + dbt Learning Lakehouse
 
-A hands-on project for learning lakehouse architecture through a small logistics domain. You will start a local stack, load deterministic delivery events, and transform raw data into tested analytical models.
+A hands-on project for learning lakehouse architecture through a small logistics domain. Load deterministic delivery events and transform them into tested analytical models of package delivery, route efficiency and hub dwell.
 
-All six learning slices are **implemented, tested and committed**: core lakehouse, schema evolution, partitioning/file pruning, time travel/rollback, maintenance, and incremental predicates. The completion audit passes **AC-001–AC-045**, including all **14 learning competencies (AC-002)**.
-
-## Project status
-
-Status reconciled on **2026-11-02**, through incremental implementation commit `57d0d97` and completion audit `project_final_001`.
-
-| Completed slice | Verified scope | Retained acceptance evidence |
-|---|---|---|
-| **Core lakehouse** | RustFS/Polaris/Trino/dbt stack; Bronze/Silver/Gold; SCD Type 2; duplicates and late events; DQ and reconciliation. | `imp007_final5` — PASS, 2026-10-29; AC-001 and AC-003–AC-012. |
-| **Schema evolution** | Metadata-only add/rename/type widening; old-file reads; writer compatibility; typed S0/S1 historical projections; rejected narrowing without partial changes; core regression. | `seimp006_final2` — PASS, 2026-10-30; AC-013–AC-020. |
-| **Partitioning / file pruning** | Balanced and skewed datasets of 256,000 rows each; eight U/D/R/DR tables; 52 query/layout cases with exact results, plans, file inventories, and physical-input evidence. | `pfimp006_final` — PASS, 2026-11-01; AC-021–AC-027. |
-| **Time travel / rollback** | Real staged H0/H1/Hbad; three ID reads and five UTC timestamp cases; three atomic negative operations; rollback preserving historical data/delete files; final baseline build and isolated cleanup. | `tt_imp006_final` — PASS, 2026-11-02; AC-028–AC-033. |
-| **Maintenance** | Small-files diagnostics, compaction, safe two-snapshot expiration, age/location-bounded orphan cleanup, session retention and complete evidence/cleanup. | `ma_imp005_final` — PASS, 2026-11-02; AC-034–AC-040. |
-| **Incremental predicates** | Real dbt merge, independent full rebuild, late/duplicate events, replay/full-refresh, source/target counterexamples and scan evidence. | `inc_imp001_final2` — PASS, 2026-11-02; AC-041–AC-045. |
-
-Run directories are under `artifacts/acceptance/` and are ignored by Git; they are local evidence, not files supplied by a fresh clone. See [docs/status.md](docs/status.md) for task completion commits and detailed acceptance/review history. AC-002 is verified by [the 14-competency matrix](docs/learning-outcomes.md) and the independent completion audit.
-
-## What you will learn
-
-- where object data, Iceberg metadata, and catalog entries live;
-- how Apache Iceberg uses snapshots, manifests, and data files;
-- how Trino reads and writes Iceberg tables through a REST catalog;
-- how dbt builds Bronze, Silver, and Gold layers;
-- how to handle duplicates and late-arriving events;
-- how to model SCD Type 2 and an accumulating snapshot;
-- how to validate data with dbt tests and reconciliation checks;
-- how schema evolution preserves old data files and how historical snapshot schemas affect reads;
-- how partition layouts and skew affect pruning, using query plans and physical-input evidence rather than elapsed time alone;
-- how historical reads differ from rollback, and commit time differs from business event time;
-- how to verify historical snapshots, rollback atomicity, and preservation of data/delete files.
+Start with the [manual walkthrough](docs/quickstart.md) to explore SQL and late-arriving events, or run the [quick check](#quick-check) below for an automated acceptance report.
 
 ## Architecture
 
 ```text
-CSV fixtures
-    │
-    ▼
-RustFS (S3-compatible object storage)
-    ▲
-    │ data files and Iceberg metadata
-    ▼
-Apache Polaris (Iceberg REST catalog)
-    ▲
-    │ catalog API
-    ▼
-Trino (SQL query engine)
-    ▲
-    │
-    ▼
-dbt Core: Bronze → Silver → Gold + tests
+CSV fixtures ── loader SQL ──┐
+                            ▼
+dbt models ── SQL ────────► Trino ── REST catalog ──► Polaris
+                            │
+                            └── data + Iceberg metadata ──► RustFS
 ```
 
-| Component | Role in this project |
-|---|---|
-| **RustFS** | Stores Parquet files and Iceberg metadata. |
-| **Apache Polaris** | Registers Iceberg tables and provides the REST catalog. |
-| **Apache Iceberg** | Defines the table format, snapshots, and metadata evolution. |
-| **Trino** | Executes SQL against Iceberg tables. |
-| **dbt Core + dbt-trino** | Builds models, dependencies, and data tests. |
-| **Docker Compose** | Runs the complete stack without installing Trino or dbt on the host. |
+- **RustFS** stores Parquet data and Iceberg metadata in S3-compatible object storage.
+- **Apache Polaris** registers tables through the Iceberg REST catalog.
+- **Trino** reads and writes **Apache Iceberg** tables using SQL.
+- **dbt Core + dbt-trino** builds `Bronze → Silver → Gold` models and tests.
+- **Docker Compose** runs the stack with pinned container versions and dependencies.
 
-## Quick start
+Bronze preserves raw duplicates, Silver types and canonicalizes events and binds packages to route-plan versions, and Gold calculates delivery and hub metrics. Late events update dependent metrics while preserving an already known final delivery state. See [model grain and SQL examples](docs/data-model.md).
 
-### 1. Requirements
+## Quick check
 
-- Docker Engine and Docker Compose;
-- Python 3.12+ for the acceptance runners and host-side unit tests;
-- approximately 4 CPUs and 8 GB of memory available to Docker.
-
-Container versions and Python dependencies are pinned in the repository.
-
-### 2. Create the local environment file
-
-Copy the tracked template and keep the resulting `.env` file local:
+Requires Docker Engine with Compose, Python 3.12+, and approximately 4 CPUs / 8 GB available to Docker. Run from the repository root with no existing default-project containers. After a manual session, use `docker compose down` first; see [environment preparation and cleanup](docs/verification.md#prepare-the-environment).
 
 ```bash
-cp .env.example .env
-```
-
-The template contains non-production training credentials. Docker Compose and the acceptance scripts load the root `.env` automatically; shell variables still take precedence when explicitly set.
-
-`DBT_TRINO_SCHEMA` is the prefix for an isolated learning run. With the template value, models are created in the `learn_bronze`, `learn_silver`, and `learn_gold` schemas.
-
-### 3. Start the stack
-
-```bash
+if [ ! -f .env ]; then
+  cp .env.example .env
+fi
 docker compose --profile tools config --quiet
 docker compose --profile tools build dbt
-docker compose up -d --wait --wait-timeout 240 rustfs polaris trino
-```
-
-Available endpoints:
-
-- Trino: <http://localhost:8080>
-- Polaris API: <http://localhost:8181>
-- RustFS API: <http://localhost:9000>
-- RustFS Console: <http://localhost:9001>
-
-Check the stack:
-
-```bash
-docker compose ps -a
-docker compose exec -T trino trino --execute "SELECT 1"
-```
-
-If the first query reports that Trino is still starting, wait a few seconds and retry.
-
-### 4. Validate and load the fixtures
-
-You can validate all CSV files without connecting to Trino:
-
-```bash
-docker compose --profile tools run --rm --no-deps \
-  --entrypoint python dbt scripts/load_fixtures.py --validate-only
-```
-
-Load the first batch:
-
-```bash
-docker compose --profile tools run --rm --no-deps \
-  --entrypoint python dbt \
-  scripts/load_fixtures.py --scenario baseline --batch batch_1
-```
-
-### 5. Build the first model state
-
-```bash
-docker compose --profile tools run --rm dbt debug
-
-docker compose --profile tools run --rm dbt run \
-  --select tag:bronze tag:silver tag:gold
-```
-
-Inspect package `P3` before its late events arrive:
-
-```bash
-docker compose exec -T trino trino --execute "
-SELECT
-  package_id,
-  current_status,
-  delivery_duration_hours,
-  is_on_time,
-  visit_count,
-  completed_dwell_hours,
-  actual_distance_meters / planned_distance_meters AS route_ratio
-FROM lakehouse.learn_gold.gold_package_delivery_fact
-WHERE package_id = 'P3'
-"
-```
-
-Expected result: the package is already delivered, no hub visits are known yet, and the actual-to-planned route ratio is `1.0`.
-
-### 6. Add late events and run the full build
-
-```bash
-docker compose --profile tools run --rm --no-deps \
-  --entrypoint python dbt \
-  scripts/load_fixtures.py --scenario baseline --batch batch_2
-
-docker compose --profile tools run --rm dbt build \
-  --select tag:bronze tag:silver tag:gold
-```
-
-Run the `P3` query again. Delivery status, duration, and `is_on_time` remain unchanged, while two hub visits, three hours of dwell time, and a route ratio of `1.5` appear.
-
-This is the main learning scenario: **late-arriving events recalculate dependent metrics without changing an already known final delivery state**.
-
-## Explore the layers
-
-### Bronze — preserve raw rows
-
-```bash
-docker compose exec -T trino trino --execute \
-  "SELECT count(*) FROM lakehouse.learn_bronze.bronze_tracking_events"
-```
-
-Bronze preserves both rows of an exact duplicate. The complete baseline contains 28 event rows.
-
-### Silver — canonical events and typed state
-
-```bash
-docker compose exec -T trino trino --execute \
-  "SELECT count(*) FROM lakehouse.learn_silver.silver_tracking_events"
-```
-
-Silver keeps one canonical row per `event_id`. The complete baseline contains 27 canonical events.
-
-### Gold — analytical results
-
-```bash
-docker compose exec -T trino trino --execute "
-SELECT
-  package_id,
-  current_status,
-  delay_hours,
-  is_on_time,
-  final_route_deviation_pct
-FROM lakehouse.learn_gold.gold_package_delivery_fact
-ORDER BY package_id
-"
-```
-
-The fixtures cover four scenarios:
-
-- `P1` — an on-time delivery following the original route plan;
-- `P2` — a late delivery with a route deviation;
-- `P3` — an exact duplicate and late-arriving events;
-- `P4` — an active delivery with an open hub visit.
-
-### Iceberg snapshots
-
-```bash
-docker compose exec -T trino trino --execute "
-SELECT committed_at, snapshot_id, operation
-FROM lakehouse.learn_gold.\"gold_package_delivery_fact\$snapshots\"
-ORDER BY committed_at
-"
-```
-
-Use the RustFS Console to find the corresponding Parquet files, metadata JSON files, and Avro manifests.
-
-## Run acceptance workflows
-
-Create the local `.env` and build the dbt image as described above. Run the workflows sequentially, with a fresh run ID for each invocation. Stop the manually started stack first so each runner can start and restore an initially stopped environment:
-
-```bash
-docker compose down
-```
-
-### Core lakehouse
-
-Runs the baseline, compares the state before and after late events, and executes three isolated negative data-quality scenarios:
-
-```bash
 python3 scripts/run_acceptance.py --run-id learn_acceptance
 ```
 
-### Schema evolution
+The runner starts the stack, checks the baseline and late events, runs negative data-quality scenarios, and cleans its training tables and containers. It preserves existing named volumes. The template uses local training credentials; keep `.env` untracked.
 
-Runs core regression before/after an isolated evolution exercise: capture S0, add/rename/widen columns without rewriting data files, verify readers and writers, create S1, compare typed historical projections, and reject narrowing without state changes:
-
-```bash
-python3 scripts/run_schema_evolution_acceptance.py --run-id learn_schema_evolution
-```
-
-Historical reads use each snapshot's schema on the pinned Trino version. The S0 comparison explicitly maps the legacy column name, supplies a typed NULL for the added column, and widens the count; it does not assume that S0 exposes the current schema.
-
-### Partitioning and file pruning
-
-Generates balanced/skewed data and compares unpartitioned (U), day-partitioned (D), route-bucketed (R), and combined (DR) layouts. The 52 query/layout cases bind exact results to partition/file metadata, distributed and IO plans, and `EXPLAIN ANALYZE` physical input; elapsed time is not a PASS threshold:
-
-```bash
-python3 scripts/run_partitioning_file_pruning_acceptance.py --run-id learn_partition_pruning
-```
-
-Each runner writes evidence under `artifacts/acceptance/<run-id>/`, including `acceptance_summary.json`, command records, an evidence manifest, and a secret scan. It cleans up task-owned schemas/object prefixes and restores the initial environment while preserving pre-existing Docker volumes. See the relevant summary's `outcome` and `ac_results`; intentionally incomplete historical checkpoint runs are not overall slice PASS results.
-
-### Time travel and rollback
-
-Run the complete TT-1 exercise with a fresh run ID:
-
-```bash
-python3 scripts/run_time_travel_acceptance.py --run-id learn_time_travel
-```
-
-The runner builds unchanged core models in isolated source schemas, first from batch_1 and then batch_2. One separate eight-column Iceberg v2 table retains three states:
-
-| P3 metric | H0 before late events | H1 after late events | Hbad after fault injection | Current after rollback |
-|---|---:|---:|---:|---:|
-| Delivery duration, hours | 36 | 36 | 360 | 36 |
-| Completed visits | 0 | 2 | 2 | 2 |
-| Completed dwell, hours | 0 | 3 | 3 | 3 |
-| Actual/planned distance | 1.0 | 1.5 | 1.5 | 1.5 |
-
-P1/P2/P4 remain unchanged. Snapshot IDs and millisecond UTC commit times come from runtime metadata. Before rollback, three snapshot-ID reads and five timestamp cases verify the saved states. Two unavailable-version reads and one invalid rollback must fail with the expected diagnostic and leave the full state unchanged. Rollback restores H1 while Hbad remains readable by ID, without a fourth data snapshot or new data/delete files. Both post-batch_2 and final baseline dbt builds pass all 128 nodes (15 models and 113 tests).
-
-Evidence under `artifacts/acceptance/<run-id>/` includes typed rows and SQL in `history/`, per-operation negative comparisons in `negative/`, rollback results in `rollback/`, and catalog metadata, object inventories and SHA-256 proofs in `states/`. The runner deletes its five training schemas and all their objects after the checks; use the saved SQL/results to inspect the completed exercise. Overall PASS requires AC-028–AC-033, evidence replay, a complete manifest, secret scan, isolation and environment restoration.
-
-Two smaller modes are also available, each using a fresh ID:
-
-```bash
-python3 scripts/run_time_travel_acceptance.py --run-id learn_tt_environment --check-environment
-python3 scripts/run_time_travel_acceptance.py --run-id learn_tt_probe --probe
-```
-
-The environment mode verifies lifecycle/allowlist and returns `ENVIRONMENT_READY`; it performs no fixture/model/table writes. The probe runs the bounded three-snapshot compatibility experiment and returns `CHECKPOINT`. Neither result is full TT acceptance. A healthy default stack is borrowed and left running; otherwise the runner manages only a new task-specific Compose project and removes its containers/network afterward. Named volumes are preserved. Existing evidence, occupied prefixes and unknown/partial default stacks are refused.
-
-Branches/tags, timestamp semantics after rollback and maintenance remain outside TT-1. See [the approved contract](docs/spec.md#12-новый-срез-time-travel-и-rollback) and [the bootstrap plan](docs/bootstrap-time-travel.md).
-
-### Maintenance
-
-```bash
-python3 scripts/run_maintenance_acceptance.py --run-id learn_maintenance
-```
-
-The disposable `<run-id>_maintenance` schema contains `maintenance_events` and an unchanged control table. Sixteen commits produce 2048 deterministic rows in 16 files below 1 MiB. Compaction reduces the current files from 16 to one while preserving rows and historical reads. An identical-row retention anchor followed by an append allows expiration to retain historical/current states of 2048/2176 rows and reclaim all 16 obsolete small files.
-
-Two default-retention calls must fail atomically. Only the individual maintenance SQL sessions override the minimum retention to 0s; ordinary/global defaults stay 7d. The exercise uses 1s expiration with `retain_last=2`, then 10s orphan cleanup. The expired snapshot becomes unreadable. An aged orphan is removed while a young orphan, an outside-table marker, control and referenced data/delete files survive unchanged. These intervals belong to the isolated learning exercise.
-
-`ma_imp005_final` passed AC-034–AC-040 on 2026-11-02. Evidence includes file distributions, plans, catalog/S3 metadata, raw content hashes, retained/expired reads, marker ages and per-operation before/after bundles. All owned data is cleaned at the end, the initial stack state is restored and existing volumes are preserved. The smaller `--check-environment` mode returns CHECKPOINT and performs no data writes. See [the contract](docs/spec.md#13-maintenance) and [execution plan](docs/bootstrap-maintenance.md).
-
-### Incremental predicates
-
-```bash
-python3 scripts/run_incremental_acceptance.py --run-id learn_incremental
-```
-
-The standalone dbt project in `dbt/exercises/incremental/` uses the same pinned image/profile and one disposable schema. Core models keep their existing table materializations. The safe model applies a seven-day received_at window to incoming data and the target MERGE predicate, using event_id as unique_key. It preserves the older E0 target row and admits late E5 based on received_at.
-
-Initial data produces five rows. The second batch, its replay, a full refresh and the next incremental run all produce the same seven unique rows with amount sum 215, matching a separate full rebuild and independent Python oracle. Two intentionally wrong models make the failure modes visible: an event_at source filter loses E5 (six rows), and an event_at target predicate duplicates E1/E2 (nine rows, seven IDs). Positive dbt tests cover the safe/full models; the wrong models remain isolated counterexamples.
-
-`inc_imp001_final2` passed AC-041–AC-045. Saved actual MERGE and compiled source SQL, dbt results and IO/ANALYZE plans explain both predicates. After replay the source has 11 raw rows; six canonical IDs meet the window, while the target retains all seven IDs. The window assumes new arrivals satisfy the received_at bound; older received_at backfills require a separate full rebuild. Physical-byte or elapsed-time reduction is not a PASS threshold for this tiny unpartitioned dataset. Evidence is retained and task-owned data is removed after acceptance.
-
-### Fast unit tests
-
-The suite runs without Docker and contains 126 positive and mutation tests across the acceptance helpers and completion auditor:
-
-```bash
-PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/tests -v
-```
-
-## Repository guide
+Success means exit code `0` and `outcome=PASS` in:
 
 ```text
-compose.yaml                 local lakehouse stack
-docker/dbt/                  dbt image and dependency lock
-infra/                       RustFS, Polaris, and Trino bootstrap configuration
-dbt/fixtures/                baseline and negative scenarios
-dbt/models/bronze/           immutable raw layer
-dbt/models/silver/           typed/canonical data and SCD Type 2
-dbt/models/gold/             facts and aggregates
-dbt/tests/                   business, DQ, and reconciliation tests
-scripts/run_acceptance.py    core end-to-end acceptance
-scripts/run_schema_evolution_acceptance.py
-                            schema evolution and core regression
-scripts/run_partitioning_file_pruning_acceptance.py
-                            partitioning/file-pruning benchmark
-scripts/run_time_travel_acceptance.py
-                            staged historical reads, rollback, evidence and cleanup
-scripts/run_maintenance_acceptance.py
-                            small files, compaction, expiration and orphan cleanup
-scripts/run_incremental_acceptance.py
-                            real dbt predicates, counterexamples and replay
-scripts/verify_project_completion.py
-                            reports, manifests, frozen contracts and AC-002
-scripts/learning_exercise.py shared isolated lifecycle/evidence adapter
-scripts/tests/              lakehouse acceptance helper unit tests
-docs/spec.md                approved contracts and full project scope
-docs/bootstrap.md           plan for the completed core slice
-docs/bootstrap-schema-evolution.md
-                            plan for the completed schema evolution slice
-docs/bootstrap-partitioning-file-pruning.md
-                            plan for the completed partitioning/pruning slice
-docs/bootstrap-time-travel.md
-                            approved TT plan and project completion roadmap
-docs/bootstrap-maintenance.md
-                            maintenance execution plan
-docs/learning-outcomes.md    all 14 competencies and acceptance evidence
-docs/status.md              current completion summary and task evidence
+artifacts/acceptance/learn_acceptance/acceptance_summary.json
 ```
 
-Suggested model reading order:
+Reports are local and Git-ignored. Use a fresh run ID on each invocation; existing reports are never overwritten. For tables you can inspect interactively, follow the [manual walkthrough](docs/quickstart.md).
 
-1. `bronze_tracking_events.sql`;
-2. `silver_tracking_events_typed.sql`;
-3. `silver_tracking_events.sql`;
-4. `silver_route_plan_versions.sql`;
-5. `silver_package_route_binding.sql`;
-6. `gold_hub_visits.sql`;
-7. `gold_package_delivery_fact.sql`;
-8. Gold aggregate models and reconciliation tests.
+## Learning modules
 
-## Stop or reset the project
+Work through the modules in order. Each guide includes the command, expected behavior and evidence to inspect.
 
-Stop containers and preserve the data:
+| Module | What you will practice |
+|---|---|
+| [Core lakehouse](docs/exercises.md#core-lakehouse) | Bronze/Silver/Gold, SCD Type 2, accumulating facts, duplicates, late events and reconciliation |
+| [Schema evolution](docs/exercises.md#schema-evolution) | Add, rename and widen columns; compare historical schemas; reject narrowing |
+| [Partitioning and file pruning](docs/exercises.md#partitioning-and-file-pruning) | Compare layouts and skew through file metadata, query plans and physical input |
+| [Time travel and rollback](docs/exercises.md#time-travel-and-rollback) | Read historical snapshots by ID/time, inject a fault and restore a known state |
+| [Maintenance](docs/exercises.md#maintenance) | Diagnose small files, compact, expire snapshots and remove orphans |
+| [Incremental predicates](docs/exercises.md#incremental-predicates) | Apply source/target MERGE predicates and test late events, replay and counterexamples |
 
-```bash
-docker compose down
-```
+## Documentation
 
-Delete all local project data:
+| Guide | Use it to |
+|---|---|
+| [Manual walkthrough](docs/quickstart.md) | Start the stack, load two batches, inspect P3, find endpoints and stop/reset |
+| [Learning exercises](docs/exercises.md) | Run all six modules and understand their expected behavior |
+| [Data model and SQL queries](docs/data-model.md) | Understand layer grain, query results and navigate the source models |
+| [Verification and acceptance results](docs/verification.md) | Run unit tests, read reports, reproduce retained results and audit completion |
 
-```bash
-docker compose down -v
-```
+Project contracts and implementation history:
 
-> `down -v` permanently removes the training RustFS volume and all Iceberg files stored in it.
-
-## Technology documentation
-
-- [Apache Iceberg](https://iceberg.apache.org/docs/latest/)
-- [Trino Iceberg connector](https://trino.io/docs/current/connector/iceberg.html)
-- [Trino and Iceberg REST catalogs](https://trino.io/docs/current/object-storage/metastores.html)
-- [Apache Polaris](https://polaris.apache.org/)
-- [dbt Core](https://docs.getdbt.com/docs/core)
-- [RustFS](https://docs.rustfs.com/)
-- [Docker Compose](https://docs.docker.com/compose/)
+- [Specification](docs/spec.md): agreed scope and acceptance criteria.
+- [Learning outcomes](docs/learning-outcomes.md): competencies and supporting evidence.
+- [Status](docs/status.md): completed tasks, commits and review history.
+- Execution plans: [core](docs/bootstrap.md), [schema evolution](docs/bootstrap-schema-evolution.md), [partitioning](docs/bootstrap-partitioning-file-pruning.md), [time travel and completion roadmap](docs/bootstrap-time-travel.md), [maintenance](docs/bootstrap-maintenance.md).
 
 ## Completion and verification
 
-The agreed project scope is complete. The retained completion audit `project_final_001` verifies all 45 criteria, all 14 competencies, six accepted slice reports, 3559 manifest-covered evidence files, unchanged completed implementation/contracts and task-runtime cleanup. Every implementation stage has a separate commit; [docs/status.md](docs/status.md) records completion history.
-
-Recheck the retained reports with a fresh report ID:
-
-```bash
-python3 scripts/verify_project_completion.py --run-id project_recheck_001 --check-docker
-```
-
-The audit checks the exact retained run IDs in the status table. On a fresh clone, first run each of the six documented acceptance runners using those run IDs; local evidence is Git-ignored. On an existing checkout, occupied run IDs are refused rather than overwritten. Omitting `--check-docker` uses retained cleanup evidence; the flag additionally checks that task-owned containers/networks are absent. Named volumes are intentionally preserved.
-
-Historical Specify/Bootstrap stopping points remain in the planning documents. Current completion is defined by this audit and [the outcome matrix](docs/learning-outcomes.md). Branches/tags, CDC/orchestration and production security remain outside the agreed learning scope.
+All six modules are implemented, tested and committed. The [retained results](docs/verification.md#retained-results) record accepted runs and coverage; the [completion audit](docs/verification.md#completion-audit) explains how to verify them or reproduce the evidence on a fresh clone.
