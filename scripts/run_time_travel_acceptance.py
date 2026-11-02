@@ -534,6 +534,25 @@ def sql_timestamp(milliseconds: int) -> str:
     return "TIMESTAMP '" + value.strftime("%Y-%m-%d %H:%M:%S.") + f"{milliseconds % 1000:03d} UTC'"
 
 
+def absent_snapshot_id(metadata: dict[str, Any]) -> int:
+    present = {entry["snapshot-id"] for entry in metadata.get("snapshots", [])}
+    value = 2**63 - 1
+    while value in present:
+        value -= 1
+    require(value > 0, "cannot select missing positive BIGINT snapshot ID")
+    return value
+
+
+def assert_negative_result(result: CommandResult, kind: str, missing: int) -> None:
+    diagnostic = (result.stdout + result.stderr).lower()
+    require(result.returncode != 0, "negative operation unexpectedly succeeded")
+    require(not any(word in diagnostic for word in ("connection refused", "syntax error", "mismatched input", "access denied", "not authorized", "still initializing", "timed out", "unknown host", "catalog not found", "schema does not exist", "table does not exist")), "unrelated failure is not a negative PASS")
+    if kind == "timestamp":
+        require("version" in diagnostic and ("before" in diagnostic or "at or" in diagnostic) and ("no " in diagnostic or "not " in diagnostic), "wrong unavailable-time diagnostic")
+    else:
+        require(str(missing) in diagnostic and "snapshot" in diagnostic and any(word in diagnostic for word in ("not exist", "not found", "cannot find", "unknown", "invalid")), "wrong missing-snapshot diagnostic")
+
+
 class TimeTravelWorkflow(TimeTravelAcceptanceRun):
     """TT-only evidence/cleanup orchestration; never inherit blanket-PASS finalize."""
 
@@ -658,6 +677,30 @@ class TimeTravelWorkflow(TimeTravelAcceptanceRun):
         require(self.bundle("after_history") == before, "historical reads changed current/metadata/files")
         self.write_json("history/comparison.json", {"snapshot_ids": self.ids, "timestamp_cases": [{"case": n, "utc": sql_timestamp(ms), "expected": label} for n, ms, label in cases], "current_unchanged": True, "commit_time_is_not_event_time": True})
         self.ac_results["AC-029"] = "PASS"
+
+    def stage_negative(self) -> None:
+        metadata = self.hbad["metadata"]
+        missing = absent_snapshot_id(metadata)
+        require(missing not in {entry["snapshot-id"] for entry in metadata["snapshots"]}, "negative ID is not absent")
+        early = metadata["snapshot-log"][0]["timestamp-ms"] - 1
+        cases = [
+            ("snapshot_read", f"SELECT * FROM {self.table} FOR VERSION AS OF {missing}"),
+            ("timestamp", f"SELECT * FROM {self.table} FOR TIMESTAMP AS OF {sql_timestamp(early)}"),
+            ("snapshot_rollback", f"ALTER TABLE {self.table} EXECUTE rollback_to_snapshot({missing})"),
+        ]
+        results = []
+        for name, query in cases:
+            before = self.bundle(f"negative_{name}_before")
+            require(before == self.hbad, "negative operation is not starting from Hbad")
+            self.write_text(f"negative/{name}.sql", query + "\n")
+            result = self.capture(["docker", "compose", "exec", "-T", "trino", "trino", "--execute", query], f"negative/{name}.stdout.log", allowed_returncodes={0, 1, 2})
+            assert_negative_result(result, name, missing)
+            after = self.bundle(f"negative_{name}_after")
+            require(before == after, "negative operation partially changed table/catalog/objects")
+            self.write_json(f"negative/{name}.comparison.json", {"unchanged": True, "returncode": result.returncode, "expected_error": True})
+            results.append(name)
+        self.write_json("negative/comparison.json", {"cases": results, "missing_positive_bigint": missing, "early_timestamp": sql_timestamp(early), "all_atomic": True})
+        self.ac_results["AC-031"] = "PASS"
 
     def probe(self) -> None:
         started = time.monotonic()

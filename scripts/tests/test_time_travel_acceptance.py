@@ -622,5 +622,26 @@ class TimestampTests(unittest.TestCase):
                 target.timestamp_cases(metadata)
 
 
+class NegativeOperationTests(unittest.TestCase):
+    def test_missing_id_is_positive_bigint_and_not_present(self):
+        metadata = SnapshotInvariantTests().metadata()
+        metadata["snapshots"].append({"snapshot-id": 2**63 - 1})
+        chosen = target.absent_snapshot_id(metadata)
+        self.assertEqual(chosen, 2**63 - 2)
+        self.assertNotIn(chosen, [row["snapshot-id"] for row in metadata["snapshots"]])
+
+    def test_semantic_snapshot_and_timestamp_errors_are_accepted(self):
+        for kind, text in [("snapshot_read", "Snapshot ID 123 does not exist"), ("snapshot_rollback", "Cannot roll back to unknown snapshot id: 123"), ("timestamp", "No version of table exists at or before 2026-01-01")]:
+            result = target.CommandResult(["trino"], 1, 0, "", text)
+            target.assert_negative_result(result, kind, 123)
+
+    def test_connection_syntax_wrong_id_and_success_are_not_negative_pass(self):
+        for code, text in [(0, "Snapshot ID 123 does not exist"), (1, "Connection refused: snapshot 123"), (1, "syntax error snapshot 123"), (1, "mismatched input snapshot 123"), (1, "Snapshot ID 124 does not exist"), (1, "Access denied to snapshot 123"), (1, "Trino server is still initializing"), (1, "unrelated failure")]:
+            with self.subTest(code=code, text=text), self.assertRaises(target.AcceptanceError):
+                target.assert_negative_result(target.CommandResult(["trino"], code, 0, "", text), "snapshot_read", 123)
+        with self.assertRaises(target.AcceptanceError):
+            target.assert_negative_result(target.CommandResult(["trino"], 1, 0, "", "No version access denied at or before"), "timestamp", 123)
+
+
 if __name__ == "__main__":
     unittest.main()

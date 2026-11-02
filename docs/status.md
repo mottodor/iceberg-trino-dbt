@@ -2032,3 +2032,23 @@ Unit discovery 97/97 PASS, including ambiguous/insufficiently separated times an
 
 ### Next action
 Commit this completed stage, then continue the next dependency in the approved TT plan.
+
+## TASK_ID: TT-IMP-004
+
+- Source: [Time travel bootstrap](bootstrap-time-travel.md) §5–6; [spec](spec.md) §12.
+- Status: DONE
+- Updated: 2026-11-02T15:47:02+03:00
+- Baseline HEAD: e30470871870d4be50156ea12b004c7e4143258f
+
+### Progress
+- Implemented: Implemented three atomic negative operations: unavailable positive BIGINT snapshot read, t0 minus one millisecond read and rollback to the absent ID. Each checks a semantic unavailable-version diagnostic and its own complete before/after table, catalog, object and checksum bundle.
+- Remaining: none within this stage; final AC-028–AC-033 acceptance is recorded separately under TT-IMP-006.
+
+### AC evidence
+Unit discovery 100/100 PASS; negative tests reject successful operations, wrong IDs, network/auth/startup/syntax failures. Live tt_staged_dev002 reached STAGE_PASS stage_negative: all three operations returned nonzero with the expected semantic diagnostic and zero state changes. negative/comparison.json records missing ID 9223372036854775807 and the exact early UTC timestamp; AC-031 PASS.
+
+### Review
+- Codex direct source/diff verification and recorded tests; no pi reviewer invocation is claimed. User authorized sequential execution and commits on 2026-11-02.
+
+### Next action
+Commit this completed stage, then continue the next dependency in the approved TT plan.
