@@ -2144,3 +2144,23 @@ Documentation matches tt_imp006_final PASS and implementation commit 1bf0c5a. Re
 
 ### Next action
 Commit this documentation checkpoint. TT-1 is complete; maintenance and AC-002 remain in the project roadmap.
+
+## TASK_ID: MA-SPEC-001
+
+- Source: [Completion roadmap](bootstrap-time-travel.md) §9; [specification](spec.md) §13–14.
+- Status: DONE
+- Updated: 2026-11-02T16:59:56+03:00
+- Baseline HEAD: c568502a5903e842a37741fa7bd4f8966b7f82cf
+
+### Progress
+- Implemented: Defined isolated maintenance contract, deterministic 2048-row/16-commit workload, compaction threshold, two retained snapshots, orphan age/location checks and session-only retention overrides. Added AC-034–AC-040 without changing earlier contracts.
+- Remaining: none within this stage.
+
+### AC evidence
+Primary pinned Trino 484 documentation confirms optimize, expiration retain_last, orphan cleanup and session equivalents of retention minima. Specification source sections 1–12 are preserved byte-for-byte; no runtime writes or global config changes. Numerical thresholds and expected sets are fixed before implementation.
+
+### Review
+Direct source/diff review and recorded checks; no independent pi reviewer invocation is claimed. The user authorized completion of all project tasks and per-stage commits.
+
+### Next action
+Commit this completed stage and continue the project completion roadmap.

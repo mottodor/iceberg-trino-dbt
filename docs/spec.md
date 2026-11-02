@@ -1214,3 +1214,47 @@ Workflow использует новый run ID и сохраняет evidence �
 **Текущая точка остановки:** `APPROVED`, версия TT-1 только раздела 12, на основании явного ответа пользователя «одобряю». Этап Specify завершён. Сервисы, acceptance и probe не запускались, код продукта и окружение не изменялись. Разделы 1–11 остаются без изменений.
 
 **Передача следующему этапу:** использовать `docs/spec.md`, раздел 12, как утверждённый контракт TT-1 с DEC-034–DEC-040 и AC-028–AC-033. Сохранить pinned stack, immutable boundary завершённых срезов, изоляцию task-owned prefix и согласованные expected rows. Изменение scope, бизнес-результата или критериев требует возврата затронутой части в DRAFT и решения пользователя. Bootstrap, probes и реализация автоматически не запускаются; дальнейшая работа начинается отдельным поручением.
+
+## 13. Maintenance
+
+### 13.1. Полномочия и изоляция
+
+Пользователь поручил завершить все задачи проекта 2026-11-02. Этот раздел фиксирует обратимые технические решения по DEC-019 для уже обязательного maintenance scope, включая orphan-file cleanup из README. Отдельное пользовательское утверждение числовых параметров не заявляется. Контракты и исходный текст разделов 1–12 сохраняются.
+
+Новый runner `scripts/run_maintenance_acceptance.py` использует проверенный lifecycle через новый `scripts/learning_exercise.py`, без правок завершённых runners. Единственная схема — `<run_id>_maintenance`, location — `s3://iceberg-trino-dbt/warehouse/<run_id>_maintenance/`. Все таблицы и marker objects disposable. Работающий default stack заимствуется; собственный startup восстанавливается; существующие volumes не удаляются. Before/after listings, catalog pointers и bounded object inventories защищают чужие ресурсы.
+
+Операции maintenance адресуются только `maintenance_events`. Таблица `control` и marker вне location основной таблицы подтверждают границу удаления. Общие Compose, catalog properties, dependencies, core fixtures и модели не меняются.
+
+### 13.2. Детерминированные состояния
+
+Таблица Iceberg v2 Parquet: `event_id BIGINT`, `route_id VARCHAR`, `amount_units BIGINT`. Для каждого i из 1..N строка равна `(i, 'R' || CAST(i % 4 AS VARCHAR), 3*i)`; grain — event_id, SQL NULL не допускаются. Независимый Python oracle перечисляет строки, а не копирует output SQL.
+
+1. Small-files состояние: CTAS 128 строк и 15 отдельных INSERT по 128 строк дают N=2048, 16 data snapshots и минимум 16 current data files. Каждый файл меньше 1 MiB; сохраняются count/min/median/max sizes, file metadata и content SHA-256.
+2. Compaction: `optimize(file_size_threshold => '1MB')` сохраняет все 2048 typed rows. Current file count уменьшается минимум вдвое. Старый snapshot остаётся читаемым, исторические data files сохраняются до expiration. EXPLAIN/EXPLAIN ANALYZE фиксируются до/после; время исполнения не является критерием PASS.
+3. После compaction один INSERT i=2049..2176 создаёт ещё один snapshot. Он и предыдущий compacted snapshot должны пережить expiration; retained историческое состояние содержит 2048 строк, current — 2176.
+4. `expire_snapshots(retention_threshold => '1s', retain_last => 2)` выполняется после подтверждённого возрастного интервала. В current metadata остаются ровно последние два snapshots; current ID/rows сохраняются. Первый snapshot становится недоступен с содержательной ошибкой. Файлы обоих retained состояний сохраняются с теми же SHA-256; удаляется хотя бы один obsolete small data file.
+5. Orphan exercise создаёт известный unreferenced marker в data directory основной таблицы, aged больше 10 секунд, и marker за пределами её location. Непосредственно перед `remove_orphan_files(retention_threshold => '10s')` создаётся молодой unreferenced marker. Удаляется старый marker; молодой, внешний marker и все referenced data/delete files сохраняются. История и typed rows не меняются.
+
+### 13.3. Retention и негативные проверки
+
+Глобальные defaults остаются 7d. Сначала обе операции с коротким retention без override должны отказать с диагностикой минимального retention, не изменяя rows/schema/snapshots/catalog pointer/objects. Затем только соответствующий CLI SQL-session получает `lakehouse.expire_snapshots_min_retention=0s` либо `lakehouse.remove_orphan_files_min_retention=0s`. Override не переносится на другие подключения и не записывается в catalog config. Значения обычного SHOW SESSION сравниваются до/после.
+
+Это локальный disposable эксперимент, а не рекомендованный production retention. Реальный возраст orphan objects проверяется по storage metadata; timestamps не подделываются. Невозможность безопасно выполнить контракт означает FAIL/NOT_RUN с сохранённой причиной, без ослабления глобальных ограничений.
+
+### 13.4. Критерии приёмки
+
+| AC | Условие PASS |
+|---|---|
+| AC-034 | Завершённые код/fixtures/config и старые контракты сохранены; чужие schemas/tables/catalog pointers/objects неизменны; записи только в точную owned schema/location |
+| AC-035 | Реальные 16 commits, 2048 уникальных typed rows по независимому oracle, минимум 16 small files; metadata/file size/content hashes и диагностика topology полны |
+| AC-036 | Compaction сохраняет строки; current file count минимум вдвое меньше; исходная history читаема; control и исторические data hashes неизменны; планы сохранены |
+| AC-037 | Expiration сохраняет current и compacted historical snapshot, оставляет ровно два snapshots, удаляет obsolete data; retained checksums сохранены; expired read получает semantic error без мутации |
+| AC-038 | Aged orphan удалён, young/outside/referenced objects сохранены; rows/schema/snapshots/current и control не меняются |
+| AC-039 | Оба default-retention отказа атомарны и содержательны; session overrides ограничены отдельными SQL-командами; глобальные/session defaults вне этих команд неизменны |
+| AC-040 | Все AC-034–039 PASS; catalog/storage/evidence полны, manifest/replay/secret scan успешны; все owned schemas/objects удалены, lifecycle восстановлен и volumes сохранены |
+
+### 13.5. Evidence и источники
+
+Run artifacts — только `artifacts/acceptance/<fresh_run_id>/`: SQL, typed rows, current metadata из Polaris и S3, snapshots/history, file inventories, raw content hashes, plans, operation metrics, marker ages, negative diagnostics и отдельные invariant comparisons. PASS только после cleanup и полноты evidence; промежуточные runs — CHECKPOINT. Полнота не определяется одним count или self-report.
+
+Первичный источник: [Trino 484 Iceberg connector](https://github.com/trinodb/trino/blob/484/docs/src/main/sphinx/connector/iceberg.md), `optimize`, `expire_snapshots`, `retain_last`, `remove_orphan_files` и session equivalents минимального retention. Проверено 2026-11-02; документация не заменяет runtime evidence.
