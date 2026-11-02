@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import csv
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -28,6 +29,33 @@ def canonical_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
             require(isinstance(result[name], list), "malformed statistics metadata")
             result[name] = sorted(result[name], key=lambda entry: json.dumps(entry, sort_keys=True))
     return result
+
+
+def verify_snapshot(root: Path, name: str) -> dict[str, Any]:
+    base = root / "states" / name
+    state = json.loads((base / "bundle.json").read_text())
+    raw = (base / "metadata.json").read_bytes()
+    catalog = json.loads((base / "catalog_metadata.json").read_text())
+    require(canonical_metadata(json.loads(raw)) == canonical_metadata(catalog["metadata"]) == state["metadata"], "saved metadata disagreement")
+    require(catalog["metadata-location"] == state["metadata_location"], "saved catalog pointer mismatch")
+    key = state["metadata_location"].removeprefix(f"s3://{BUCKET}/")
+    require(key in state["sha256"] and hashlib.sha256(raw).hexdigest() == state["sha256"][key], "raw metadata content checksum mismatch")
+    schema_prefix = "/".join(key.split("/")[:2]) + "/"
+    hashes = {}
+    for line in (base / "sha256.txt").read_text().splitlines():
+        digest, path = line.split(maxsplit=1)
+        require(path.startswith("/tmp/ttobjects/"), "invalid saved object hash path")
+        item = schema_prefix + path.removeprefix("/tmp/ttobjects/")
+        require(item not in hashes, "duplicate saved content hash")
+        hashes[item] = digest
+    require(hashes == state["sha256"] and set(hashes) == set(state["objects"]), "saved object hashes/inventory mismatch")
+    for path, item in state["files"].items():
+        require(item["size"] == state["objects"][path]["size"] and item["sha256"] == hashes[path], "saved file/storage binding mismatch")
+    rows = json.loads((base / "rows.json").read_text())
+    with (base / "rows.csv").open() as handle:
+        csv_rows = list(csv.reader(handle))
+    require(csv_rows[0] == ["row_json"] and [json.loads(row[0]) for row in csv_rows[1:]] == rows == state["rows"], "saved typed rows disagree")
+    return state
 
 
 @dataclass(frozen=True)

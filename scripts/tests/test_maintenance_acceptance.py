@@ -35,3 +35,30 @@ class WorkloadTests(unittest.TestCase):
         for files in ({}, {"a": {"content": 0, "size": 0}}, {"a": {"content": 1, "size": 100}}):
             with self.assertRaises(AcceptanceError):
                 target.distribution(files)
+
+
+class CompactionTests(unittest.TestCase):
+    def states(self):
+        files = {f"root/data/f{i}": {"content": 0, "size": 100} for i in range(16)}
+        before = {"metadata": {"table-uuid": "same", "current-snapshot-id": 16, "snapshots": [{"snapshot-id": i} for i in range(1,17)]}, "rows": target.expected_rows(2048), "files": files, "sha256": {key: key for key in files}}
+        after = copy.deepcopy(before)
+        after["files"] = {f"root/data/new{i}": {"content": 0, "size": 400} for i in range(4)}
+        after["sha256"].update({key: key for key in after["files"]})
+        after["metadata"]["snapshots"].append({"snapshot-id": 17, "parent-snapshot-id": 16})
+        after["metadata"]["current-snapshot-id"] = 17
+        return before, after
+
+    def test_compaction_keeps_rows_history_and_reduces_files(self):
+        before, after = self.states()
+        result = target.assert_compaction(before, after)
+        self.assertEqual((result["before"]["count"], result["after"]["count"]), (16, 4))
+
+    def test_no_reduction_changed_rows_or_deleted_history_are_rejected(self):
+        before, after = self.states()
+        variants = [{**after, "files": before["files"]}, {**after, "rows": after["rows"][:-1]}, {**after, "sha256": {}}]
+        changed = copy.deepcopy(after)
+        changed["metadata"]["snapshots"] = [{"snapshot-id": 17}]
+        variants.append(changed)
+        for value in variants:
+            with self.subTest(value=value.keys()), self.assertRaises(AcceptanceError):
+                target.assert_compaction(before, value)

@@ -38,6 +38,24 @@ def same_table(before: dict[str, Any], after: dict[str, Any]) -> None:
         require(before["metadata"].get(key) == after["metadata"].get(key), f"maintenance changed {key}")
 
 
+def assert_compaction(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
+    same_table(before, after)
+    assert_rows(before["rows"], 2048)
+    require(after["rows"] == before["rows"], "compaction changed logical data")
+    old, new = distribution(before["files"]), distribution(after["files"])
+    require(old["count"] >= 16 and new["count"] * 2 <= old["count"], "compaction did not halve current files")
+    snapshots = before["metadata"]["snapshots"]
+    rewritten = after["metadata"]["snapshots"]
+    require(len(rewritten) == len(snapshots) + 1, "compaction snapshot count mismatch")
+    require({s["snapshot-id"] for s in snapshots} < {s["snapshot-id"] for s in rewritten}, "compaction lost historical snapshots")
+    current = after["metadata"]["current-snapshot-id"]
+    require(next(s for s in rewritten if s["snapshot-id"] == current).get("parent-snapshot-id") == before["metadata"]["current-snapshot-id"], "compaction parent mismatch")
+    for key, digest in before["sha256"].items():
+        if "/data/" in key:
+            require(after["sha256"].get(key) == digest, "compaction destroyed historical data")
+    return {"before": old, "after": new, "rows_unchanged": True, "history_preserved": True}
+
+
 class MaintenanceRun(LearningExercise):
     def rows_query(self, relation: str | None = None) -> str:
         return f"SELECT json_format(CAST(ARRAY[CAST(event_id AS JSON), CAST(route_id AS JSON), CAST(amount_units AS JSON)] AS JSON)) AS row_json FROM {relation or self.table} ORDER BY event_id"
@@ -85,6 +103,20 @@ class MaintenanceRun(LearningExercise):
         for kind, explain in (("distributed", "EXPLAIN (TYPE DISTRIBUTED)"), ("analyze", "EXPLAIN ANALYZE")):
             self.capture(["docker", "compose", "exec", "-T", "trino", "trino", "--execute", f"{explain} {query}"], f"plans/{name}_{kind}.txt")
 
+
+    def stage_compaction(self) -> None:
+        self.current_ac = "AC-036"
+        before = self.capture_state("before_compaction")
+        require(before == self.fragmented, "state changed before compaction")
+        self.sql("compaction/optimize", f"ALTER TABLE {self.table} EXECUTE optimize(file_size_threshold => '1MB')")
+        self.compacted = self.capture_state("compacted")
+        proof = assert_compaction(before, self.compacted)
+        historical = self.rows("compaction/historical", self.rows_query(f"{self.table} FOR VERSION AS OF {before['metadata']['current-snapshot-id']}"))
+        require(historical == before["rows"], "old snapshot unreadable after compaction")
+        self.verify_control(self.compacted)
+        self.capture_plan("compacted")
+        self.write_json("compaction/comparison.json", proof)
+        self.ac_results["AC-036"] = "PASS"
 
     def workflow(self) -> None:
         raise AcceptanceError("maintenance behavioral stages are not implemented")

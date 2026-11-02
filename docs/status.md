@@ -2244,3 +2244,23 @@ Direct source/diff review and recorded checks; no independent pi reviewer invoca
 
 ### Next action
 Commit this completed stage and continue the project completion roadmap.
+
+## TASK_ID: MA-IMP-002
+
+- Source: [Completion roadmap](bootstrap-time-travel.md) §9; [specification](spec.md) §13–14.
+- Status: DONE
+- Updated: 2026-11-02T17:16:32+03:00
+- Baseline HEAD: 98a6d8715a7265f2edb1f5bc70358f71e621a21d
+
+### Progress
+- Implemented: Implemented compaction with exact row/table/schema/history invariants, old-snapshot reads, preserved historical data hashes, control checks and before/after distributed/analyze plans. Added raw snapshot replay binding catalog/S3 metadata, content hashes and typed rows.
+- Remaining: none within this stage.
+
+### AC evidence
+Unit discovery 115/115 PASS. Live ma_staged_dev003 STAGE_PASS stage_compaction: current files reduced 16 -> 1 (14392 -> 9531 bytes), all 2048 rows and prior snapshot readable, historical data files and control unchanged; AC-036 PASS. Independent replay verifies fragmented/before-compaction/compacted raw snapshots.
+
+### Review
+Direct source/diff review and recorded checks; no independent pi reviewer invocation is claimed. The user authorized completion of all project tasks and per-stage commits.
+
+### Next action
+Commit this completed stage and continue the project completion roadmap.

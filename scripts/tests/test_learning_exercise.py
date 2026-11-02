@@ -1,5 +1,7 @@
 """Safety and finalization regressions for isolated learning exercises."""
 import json
+import hashlib
+import csv
 import sys
 import tempfile
 import unittest
@@ -7,11 +9,37 @@ from pathlib import Path
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from learning_exercise import ExerciseAllowlist, LearningExercise, canonical_metadata
+from learning_exercise import ExerciseAllowlist, LearningExercise, canonical_metadata, verify_snapshot
 from run_acceptance import AcceptanceError
 
 
 class SingleSchemaTests(unittest.TestCase):
+    def test_saved_snapshot_binds_raw_metadata_hashes_and_typed_rows(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            base = root / "states/example"
+            base.mkdir(parents=True)
+            raw = b'{"table-uuid":"same"}'
+            key = "warehouse/test/table/metadata/one.json"
+            location = "s3://iceberg-trino-dbt/" + key
+            digest = hashlib.sha256(raw).hexdigest()
+            state = {"metadata": json.loads(raw), "metadata_location": location, "sha256": {key: digest}, "objects": {key: {"size": len(raw)}}, "files": {}, "rows": [[1]]}
+            (base / "metadata.json").write_bytes(raw)
+            (base / "catalog_metadata.json").write_text(json.dumps({"metadata": json.loads(raw), "metadata-location": location}))
+            (base / "bundle.json").write_text(json.dumps(state))
+            (base / "sha256.txt").write_text(digest + "  /tmp/ttobjects/table/metadata/one.json\n")
+            (base / "rows.json").write_text("[[1]]")
+            with (base / "rows.csv").open("w") as handle:
+                csv.writer(handle).writerows([["row_json"], ["[1]"]])
+            verify_snapshot(root, "example")
+            (base / "rows.json").write_text("[[2]]")
+            with self.assertRaises(AcceptanceError):
+                verify_snapshot(root, "example")
+            (base / "rows.json").write_text("[[1]]")
+            (base / "metadata.json").write_bytes(b'{"table-uuid":"changed"}')
+            with self.assertRaises(AcceptanceError):
+                verify_snapshot(root, "example")
+
     def test_statistics_order_is_ignored_but_contents_and_history_are_not(self):
         first = {"statistics": [{"snapshot-id": 3, "statistics-path": "a"}, {"snapshot-id": 1, "statistics-path": "b"}], "snapshot-log": [{"snapshot-id": 3}, {"snapshot-id": 1}]}
         reordered = {**first, "statistics": list(reversed(first["statistics"]))}
