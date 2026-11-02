@@ -1,6 +1,6 @@
 # Покрытие учебных результатов
 
-Матрица соответствует всем 14 компетенциям [исходной идеи](idea.md#приобретаемые-компетенции) и служит проверкой AC-002. Состояние после завершения TT-1: три пробела — incremental predicates, small files и maintenance. Итоговый PASS AC-002 возможен после их фактической приёмки. Raw reports находятся в Git-ignored `artifacts/acceptance/`; свежий clone воспроизводит их documented runners.
+Матрица соответствует всем 14 компетенциям [исходной идеи](idea.md#приобретаемые-компетенции) и служит проверкой AC-002. После maintenance остаётся закрыть incremental predicates. Итоговый PASS AC-002 возможен после их фактической приёмки. Raw reports находятся в Git-ignored `artifacts/acceptance/`; свежий clone воспроизводит их documented runners.
 
 | № | Компетенция | Задание или результат | Критерии и evidence | Состояние |
 |---|---|---|---|---|
@@ -16,8 +16,8 @@
 | 10 | Partitioning по workload | Balanced/skewed U/D/R/DR, exact directional comparison | AC-021–025; `pfimp006_final` 52 cases | Подтверждено |
 | 11 | EXPLAIN и file pruning | Distributed/IO/analyze планы, physical input и file bounds | AC-024–026; `pfimp006_final` causal matrix | Подтверждено |
 | 12 | Snapshot/time travel | Три ID и пять timestamp reads, rollback и negative cases | AC-029–033; `tt_imp006_final` | Подтверждено |
-| 13 | Small-files diagnostics | Детерминированный workload и file size distribution | AC-035; MA-IMP-001 | Открыто |
-| 14 | Snapshot expiration и compaction | Isolated optimize/expire/orphan cleanup с retained file safety | AC-036–040; MA-IMP-002–005 | Открыто |
+| 13 | Small-files diagnostics | Детерминированный workload и file size distribution | AC-035; `ma_imp005_final/fixture/` | Подтверждено |
+| 14 | Snapshot expiration и compaction | Isolated optimize/expire/orphan cleanup с retained file safety | AC-036–040; `ma_imp005_final` | Подтверждено |
 
 ## Условия итоговой проверки
 

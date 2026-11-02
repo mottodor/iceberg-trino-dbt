@@ -2,7 +2,7 @@
 
 A hands-on project for learning lakehouse architecture through a small logistics domain. You will start a local stack, load deterministic delivery events, and transform raw data into tested analytical models.
 
-Four learning slices are **implemented and committed**: the core lakehouse, schema evolution, partitioning/file pruning, and time travel/rollback. Each has a passing end-to-end acceptance run. Maintenance exercises and full learning-outcome coverage remain open.
+Five learning slices are **implemented and committed**: the core lakehouse, schema evolution, partitioning/file pruning, time travel/rollback, and maintenance. Each has a passing end-to-end acceptance run. Incremental-predicate coverage and AC-002 remain open.
 
 ## Project status
 
@@ -14,6 +14,8 @@ Status reconciled on **2026-11-02**, through Time travel implementation commit `
 | **Schema evolution** | Metadata-only add/rename/type widening; old-file reads; writer compatibility; typed S0/S1 historical projections; rejected narrowing without partial changes; core regression. | `seimp006_final2` — PASS, 2026-10-30; AC-013–AC-020. |
 | **Partitioning / file pruning** | Balanced and skewed datasets of 256,000 rows each; eight U/D/R/DR tables; 52 query/layout cases with exact results, plans, file inventories, and physical-input evidence. | `pfimp006_final` — PASS, 2026-11-01; AC-021–AC-027. |
 | **Time travel / rollback** | Real staged H0/H1/Hbad; three ID reads and five UTC timestamp cases; three atomic negative operations; rollback preserving historical data/delete files; final baseline build and isolated cleanup. | `tt_imp006_final` — PASS, 2026-11-02; AC-028–AC-033. |
+
+| **Maintenance** | Small-files diagnostics, compaction, safe two-snapshot expiration, age/location-bounded orphan cleanup, session retention and complete evidence/cleanup. | `ma_imp005_final` — PASS, 2026-11-02; AC-034–AC-040. |
 
 Run directories are under `artifacts/acceptance/` and are ignored by Git; they are local evidence, not files supplied by a fresh clone. See [docs/status.md](docs/status.md) for task completion commits and detailed acceptance/review history. AC-002 (full learning-outcome coverage) remains open until the remaining scope is implemented.
 
@@ -289,9 +291,21 @@ The environment mode verifies lifecycle/allowlist and returns `ENVIRONMENT_READY
 
 Branches/tags, timestamp semantics after rollback and maintenance remain outside TT-1. See [the approved contract](docs/spec.md#12-новый-срез-time-travel-и-rollback) and [the bootstrap plan](docs/bootstrap-time-travel.md).
 
+### Maintenance
+
+```bash
+python3 scripts/run_maintenance_acceptance.py --run-id learn_maintenance
+```
+
+The disposable `<run-id>_maintenance` schema contains `maintenance_events` and an unchanged control table. Sixteen commits produce 2048 deterministic rows in 16 files below 1 MiB. Compaction reduces the current files from 16 to one while preserving rows and historical reads. An identical-row retention anchor followed by an append allows expiration to retain historical/current states of 2048/2176 rows and reclaim all 16 obsolete small files.
+
+Two default-retention calls must fail atomically. Only the individual maintenance SQL sessions override the minimum retention to 0s; ordinary/global defaults stay 7d. The exercise uses 1s expiration with `retain_last=2`, then 10s orphan cleanup. The expired snapshot becomes unreadable. An aged orphan is removed while a young orphan, an outside-table marker, control and referenced data/delete files survive unchanged. These intervals belong to the isolated learning exercise.
+
+`ma_imp005_final` passed AC-034–AC-040 on 2026-11-02. Evidence includes file distributions, plans, catalog/S3 metadata, raw content hashes, retained/expired reads, marker ages and per-operation before/after bundles. All owned data is cleaned at the end, the initial stack state is restored and existing volumes are preserved. The smaller `--check-environment` mode returns CHECKPOINT and performs no data writes. See [the contract](docs/spec.md#13-maintenance) and [execution plan](docs/bootstrap-maintenance.md).
+
 ### Fast unit tests
 
-The suite runs without Docker and contains 104 positive and mutation tests: 54 partitioning/pruning tests and 50 Time travel tests:
+The suite runs without Docker and contains 120 positive and mutation tests across partitioning, Time travel and maintenance at this checkpoint:
 
 ```bash
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/tests -v
@@ -315,7 +329,10 @@ scripts/run_partitioning_file_pruning_acceptance.py
                             partitioning/file-pruning benchmark
 scripts/run_time_travel_acceptance.py
                             staged historical reads, rollback, evidence and cleanup
-scripts/tests/              partitioning/pruning and Time travel unit tests
+scripts/run_maintenance_acceptance.py
+                            small files, compaction, expiration and orphan cleanup
+scripts/learning_exercise.py shared isolated lifecycle/evidence adapter
+scripts/tests/              lakehouse acceptance helper unit tests
 docs/spec.md                approved contracts and full project scope
 docs/bootstrap.md           plan for the completed core slice
 docs/bootstrap-schema-evolution.md
@@ -366,8 +383,7 @@ docker compose down -v
 
 ## Remaining learning scope
 
-- **Maintenance:** small-files diagnostics/remediation, compaction, snapshot expiration and a specified orphan-file cleanup exercise.
 - **Incremental predicates:** map this competency to a verifiable exercise; current core models remain table materializations. Any additional exercise is isolated from their frozen contracts.
 - **Full learning-outcome coverage (AC-002):** complete the matrix mapping all 14 competencies to exercises, criteria and applicable evidence after remaining gaps are closed.
 
-Time travel and rollback are complete under TT-1. Remaining work is sequenced in [the project completion roadmap](docs/bootstrap-time-travel.md#9-порядок-завершения-проекта); actual task completion is recorded in [docs/status.md](docs/status.md).
+Time travel and maintenance are complete. Remaining work is sequenced in [the project completion roadmap](docs/bootstrap-time-travel.md#9-порядок-завершения-проекта); actual task completion is recorded in [docs/status.md](docs/status.md).

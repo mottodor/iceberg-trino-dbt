@@ -2324,3 +2324,23 @@ Direct source/diff review and recorded checks; no independent pi reviewer invoca
 
 ### Next action
 Commit this completed stage and continue the project completion roadmap.
+
+## TASK_ID: MA-DOC-001
+
+- Source: [Completion roadmap](bootstrap-time-travel.md) §9; [specification](spec.md) §13–14.
+- Status: DONE
+- Updated: 2026-11-02T17:44:49+03:00
+- Baseline HEAD: 8cb10ad9a1e1bc31163414cb5b2c929f220b55e8
+
+### Progress
+- Implemented: Documented maintenance CLI, distributions, compaction, retention anchor/expiration, orphan ages and evidence/cleanup. Closed small-files and maintenance competency rows; incremental coverage remains open.
+- Remaining: none within this stage.
+
+### AC evidence
+README statements match ma_imp005_final PASS; 120 unit tests and session-only retention behavior are recorded without claiming project completion. Documentation links/whitespace and existing task history are checked; no completed implementation files changed.
+
+### Review
+Direct source/diff review and recorded checks; no independent pi reviewer invocation is claimed. The user authorized completion of all project tasks and per-stage commits.
+
+### Next action
+Commit this completed stage and continue the project completion roadmap.
