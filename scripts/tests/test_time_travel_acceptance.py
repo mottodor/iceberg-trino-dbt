@@ -470,6 +470,24 @@ class EnvironmentFlowTests(unittest.TestCase):
 
 
 class EvidenceTests(unittest.TestCase):
+    def test_colliding_schema_cannot_be_adopted_by_cleanup(self):
+        with tempfile.TemporaryDirectory() as directory:
+            runner = target.TimeTravelWorkflow("tt_collision", Path(directory))
+            runner.allowlist_verified = True
+            with patch.object(runner, "query_csv", return_value=[["schema_name"], [runner.schema]]), patch.object(runner, "sql") as sql:
+                with self.assertRaisesRegex(target.AcceptanceError, "unclaimed schema"):
+                    runner.cleanup_task_data()
+            sql.assert_not_called()
+
+    def test_failed_schema_creation_never_claims_ownership(self):
+        with tempfile.TemporaryDirectory() as directory:
+            runner = target.TimeTravelWorkflow("tt_collision", Path(directory))
+            runner.allowlist_verified = True
+            with patch.object(runner, "sql", side_effect=target.AcceptanceError("already exists")):
+                with self.assertRaises(target.AcceptanceError):
+                    runner.create_schema(runner.schema, "create")
+            self.assertFalse(runner.created_schemas)
+
     def test_boundary_skips_virtual_tables_but_tracks_real_catalog_pointers(self):
         with tempfile.TemporaryDirectory() as directory:
             runner = target.TimeTravelWorkflow("tt_boundary", Path(directory))
@@ -651,6 +669,72 @@ class NegativeOperationTests(unittest.TestCase):
                 target.assert_negative_result(target.CommandResult(["trino"], code, 0, "", text), "snapshot_read", 123)
         with self.assertRaises(target.AcceptanceError):
             target.assert_negative_result(target.CommandResult(["trino"], 1, 0, "", "No version access denied at or before"), "timestamp", 123)
+
+
+class SavedEvidenceTests(unittest.TestCase):
+    def create_fixture(self, root):
+        r = target.TimeTravelWorkflow("tt_saved", root)
+        before, after = SnapshotInvariantTests().states()
+        for label in ("H0", "H1", "Hbad"):
+            rows = target.expected_rows(label)
+            r.write_json(f"{label.lower()}/rows.json", rows)
+            for phase in ("history", "rollback"):
+                r.write_json(f"{phase}/id_{label}.json", rows)
+        r.write_json("states/Hbad/bundle.json", before)
+        for name in ("before_history", "after_history", "before_rollback"):
+            r.write_json(f"states/{name}/bundle.json", before)
+        r.write_json("states/after_rollback/bundle.json", after)
+        for name, _, label in target.timestamp_cases(before["metadata"]):
+            r.write_json(f"history/time_{name}.json", target.expected_rows(label))
+        r.write_json("negative/comparison.json", {"missing_positive_bigint": 123})
+        for name in ("snapshot_read", "timestamp", "snapshot_rollback"):
+            for phase in ("before", "after"):
+                r.write_json(f"states/negative_{name}_{phase}/bundle.json", before)
+            r.write_json(f"negative/{name}.comparison.json", {"returncode": 1})
+            r.write_text(f"negative/{name}.stdout.log", "No version history at or before" if name == "timestamp" else "Snapshot ID 123 does not exist")
+        r.write_json("rollback/current.json", target.expected_rows("H1"))
+        for name, label in (("h0", "H0"), ("h1", "H1"), ("after_fault", "H1"), ("final_h1", "H1")):
+            r.write_json(f"source/{name}.json", target.expected_rows(label))
+        for name in ("batch_1", "batch_2", "final_build"):
+            results = [{"unique_id": unique_id, "status": "success"} for unique_id in sorted(target.MODEL_IDS)]
+            if name != "batch_1":
+                results.extend({"unique_id": f"test.example.baseline_{i}", "status": "pass"} for i in range(113))
+            r.write_json(f"source/{name}/target/run_results.json", {"results": results})
+        return r
+
+    def test_saved_behavior_rejects_wrong_history_source_errors_and_atomicity(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            r = self.create_fixture(root)
+            target.verify_saved_behavior(root)
+            changes = [
+                ("history/time_at_t1.json", target.expected_rows("H0")),
+                ("rollback/current.json", target.expected_rows("Hbad")),
+                ("source/after_fault.json", target.expected_rows("Hbad")),
+                ("negative/snapshot_read.comparison.json", {"returncode": 0}),
+                ("states/negative_snapshot_read_after/bundle.json", {"metadata": {"current-snapshot-id": 999}}),
+                ("source/final_build/target/run_results.json", {"results": []}),
+            ]
+            for path, value in changes:
+                original = (root / path).read_bytes()
+                r.write_json(path, value)
+                with self.subTest(path=path), self.assertRaises(target.AcceptanceError):
+                    target.verify_saved_behavior(root)
+                (root / path).write_bytes(original)
+            r.write_text("negative/timestamp.stdout.log", "Connection refused")
+            with self.assertRaises(target.AcceptanceError):
+                target.verify_saved_behavior(root)
+
+    def test_nested_summaries_are_covered_by_manifest(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            r = target.TimeTravelWorkflow("tt_nested", root)
+            r.write_json("nested/acceptance_summary.json", {"proof": True})
+            r.write_evidence_manifest()
+            target.verify_manifest(root, {"nested/acceptance_summary.json"})
+            r.write_json("nested/acceptance_summary.json", {"proof": False})
+            with self.assertRaises(target.AcceptanceError):
+                target.verify_manifest(root, {"nested/acceptance_summary.json"})
 
 
 if __name__ == "__main__":

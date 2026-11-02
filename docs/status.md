@@ -2072,3 +2072,23 @@ Unit discovery 100/100 PASS; rollback mutations include resized/new delete files
 
 ### Next action
 Commit this completed stage, then continue the next dependency in the approved TT plan.
+
+## TASK_ID: TT-IMP-006
+
+- Source: [Time travel bootstrap](bootstrap-time-travel.md) §5–6; [spec](spec.md) §12.
+- Status: DONE
+- Updated: 2026-11-02T16:00:41+03:00
+- Baseline HEAD: 53a139aacc02096b69a0326f13de094179d2b5b4
+
+### Progress
+- Implemented: Completed standalone default CLI workflow, final source regression, exact catalog/storage evidence, ownership-aware cleanup, implementation/protected-file fingerprints, saved-behavior replay and full mandatory evidence gating. Added --probe alongside the preserved --check-environment mode; tightened cleanup against post-preflight schema collisions.
+- Remaining: none within this stage; final AC-028–AC-033 acceptance is recorded separately under TT-IMP-006.
+
+### AC evidence
+Fresh CLI python3 scripts/run_time_travel_acceptance.py --run-id tt_imp006_final exited 0: outcome PASS, error null, AC-028–AC-033 all PASS, 267 commands in 518.621 seconds. Exactly three nonzero commands are the semantic negative operations. Both full dbt builds pass 128/128 nodes; source remains H1 and educational history survives the final rebuild. All five task schemas/prefixes empty; own containers/network absent; pre-existing volumes preserved. Saved-behavior replay and complete 973-file SHA-256 manifest verification pass; 161 mandatory behavior paths present, secret scan clean and all 62 protected files unchanged. Implementation/test fingerprints match final code. Unit discovery 104/104 PASS, including whole-evidence mutations, nested manifests and schema-ownership races. Independent post-run Docker checks confirm no final-project containers/networks remain.
+
+### Review
+- Codex direct source/diff verification and recorded tests; no pi reviewer invocation is claimed. User authorized sequential execution and commits on 2026-11-02.
+
+### Next action
+Commit this completed stage, then continue the next dependency in the approved TT plan.

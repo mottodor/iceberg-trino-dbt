@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""TT environment checkpoint (TT-ENV-001), not the complete TT acceptance.
+"""Run isolated Time travel/rollback acceptance with staged P1-P4 source data.
 
-Only --check-environment is implemented. It performs no fixture/model/table
-writes. A healthy default stack is borrowed, never stopped. Otherwise only a
-fresh, run-specific Compose project may be started; partial/stopped foreign
-projects are refused. Named volumes are never removed.
+Default: full TT-1 workflow. --check-environment only checks lifecycle/allowlist;
+--probe runs the small compatibility experiment. Healthy default stacks are
+borrowed; otherwise only a fresh task-specific project is managed. All writes
+and object cleanup use exact task-owned schemas/prefixes. Volumes are preserved.
 """
 
 from __future__ import annotations
@@ -438,7 +438,7 @@ def verify_manifest(root: Path, required: set[str]) -> None:
     entries = manifest.get("files", [])
     paths = [entry["path"] for entry in entries]
     require(len(paths) == len(set(paths)) and required <= set(paths), "incomplete/duplicate evidence manifest")
-    actual = {str(p.relative_to(root)) for p in root.rglob("*") if p.is_file() and p.name not in {"acceptance_summary.json", "evidence_manifest.json"}}
+    actual = {str(p.relative_to(root)) for p in root.rglob("*") if p.is_file() and str(p.relative_to(root)) not in {"acceptance_summary.json", "evidence_manifest.json"}}
     require(set(paths) == actual, "manifest does not cover all evidence")
     for entry in entries:
         path = root / entry["path"]
@@ -453,6 +453,11 @@ COLUMNS = (
     ("is_on_time", "boolean"), ("completed_visit_count", "bigint"),
     ("completed_dwell_hours", "double"), ("actual_to_planned_ratio", "double"),
 )
+MODEL_IDS = {
+    f"model.iceberg_trino_dbt.{path.stem}"
+    for layer in ("bronze", "silver", "gold")
+    for path in (ROOT / "dbt/models" / layer).glob("*.sql")
+}
 H0 = [
     ["P1", "R1-V1", "delivered", 48, True, 1, 4, 1.0],
     ["P2", "R1-V2", "delivered", 48, False, 3, 16, 1.5],
@@ -511,7 +516,7 @@ def assert_rollback(before: dict[str, Any], after: dict[str, Any], ids: list[int
     first, restored, bad = ids
     old, new = before["metadata"], after["metadata"]
     require(new.get("current-snapshot-id") == restored and old.get("current-snapshot-id") == bad, "rollback current mismatch")
-    for key in ("table-uuid", "current-schema-id", "schemas", "snapshots", "partition-specs", "default-spec-id"):
+    for key in ("table-uuid", "current-schema-id", "schemas", "snapshots", "partition-specs", "default-spec-id", "format-version", "last-sequence-number", "last-column-id", "sort-orders", "default-sort-order-id"):
         require(old.get(key) == new.get(key), f"rollback changed {key}")
     history = new.get("snapshot-log", [])
     require([entry["snapshot-id"] for entry in history] == [first, restored, bad, restored], "rollback history mismatch")
@@ -520,6 +525,10 @@ def assert_rollback(before: dict[str, Any], after: dict[str, Any], ids: list[int
     new_data = {key: (after["objects"][key]["size"], digest) for key, digest in after["sha256"].items() if "/data/" in key}
     require(bool(old_data) and old_data == new_data, "rollback changed historical data/delete files")
     require(before["metadata_location"] != after["metadata_location"], "rollback did not update catalog pointer")
+    if "task_objects" in before:
+        old_source = {key: value for key, value in before["task_objects"].items() if key not in before["objects"]}
+        new_source = {key: value for key, value in after["task_objects"].items() if key not in after["objects"]}
+        require(old_source == new_source, "rollback changed source objects")
 
 
 def timestamp_cases(metadata: dict[str, Any]) -> list[tuple[str, int, str]]:
@@ -553,8 +562,98 @@ def assert_negative_result(result: CommandResult, kind: str, missing: int) -> No
         require(str(missing) in diagnostic and "snapshot" in diagnostic and any(word in diagnostic for word in ("not exist", "not found", "cannot find", "unknown", "invalid")), "wrong missing-snapshot diagnostic")
 
 
+def full_evidence_paths() -> set[str]:
+    paths = {"h0/comparison.json", "states/comparison.json", "history/comparison.json", "negative/comparison.json", "rollback/comparison.json", "source/comparison.json", "runtime/end_to_end.json", "runtime/catalog_tables.csv", "runtime/polaris_tables.json"}
+    for name in ("batch_1", "batch_2", "final_build"):
+        paths.add(f"source/{name}/target/run_results.json")
+    for name in ("h0", "h1", "after_fault", "final_h1"):
+        paths.add(f"source/{name}.json")
+    for name in ("h0", "h1", "hbad"):
+        paths.add(f"{name}/rows.json")
+    labels = ["H0", "H1", "Hbad", "before_history", "after_history", "before_rollback", "after_rollback", "before_final_build", "after_final_build"]
+    for case in ("snapshot_read", "timestamp", "snapshot_rollback"):
+        labels += [f"negative_{case}_before", f"negative_{case}_after"]
+        paths |= {f"negative/{case}.stdout.log", f"negative/{case}.sql", f"negative/{case}.comparison.json"}
+    for label in labels:
+        for file in ("bundle.json", "metadata.json", "columns.csv", "rows.csv", "snapshots.csv", "history.csv", "files.csv", "sha256.txt"):
+            paths.add(f"states/{label}/{file}")
+    for label in ("H0", "H1", "Hbad"):
+        paths |= {f"history/id_{label}.json", f"rollback/id_{label}.json"}
+    for name in ("at_t0", "between_t0_t1", "at_t1", "between_t1_tb", "at_tb"):
+        paths.add(f"history/time_{name}.json")
+    return paths | {"rollback/current.json", "history/late_events.csv"}
+
+
+def verify_saved_behavior(root: Path) -> None:
+    def read(path):
+        return json.loads((root / path).read_text())
+
+    hbad = read("states/Hbad/bundle.json")
+    ids = snapshot_chain(hbad["metadata"], 3)
+    for label in ("H0", "H1", "Hbad"):
+        current = read(f"{label.lower()}/rows.json")
+        assert_rows(current, label)
+        for phase in ("history", "rollback"):
+            rows = read(f"{phase}/id_{label}.json")
+            assert_rows(rows, label)
+            require(rows == current, "saved historical/current mismatch")
+    require(read("states/before_history/bundle.json") == hbad == read("states/after_history/bundle.json"), "saved historical-read invariance failed")
+    for name, _, label in timestamp_cases(hbad["metadata"]):
+        require(read(f"history/time_{name}.json") == read(f"history/id_{label}.json"), "saved timestamp case mismatch")
+    negative = read("negative/comparison.json")
+    missing = negative["missing_positive_bigint"]
+    require(type(missing) is int and 0 < missing < 2**63 and missing not in ids, "saved negative ID is not absent")
+    for name in ("snapshot_read", "timestamp", "snapshot_rollback"):
+        require(read(f"states/negative_{name}_before/bundle.json") == hbad == read(f"states/negative_{name}_after/bundle.json"), "saved negative atomicity failed")
+        text = (root / f"negative/{name}.stdout.log").read_text()
+        stderr = root / f"negative/{name}.stdout.log.stderr.log"
+        diagnostic = stderr.read_text() if stderr.exists() else ""
+        result = CommandResult([], read(f"negative/{name}.comparison.json")["returncode"], 0, text, diagnostic)
+        assert_negative_result(result, name, missing)
+    assert_rollback(read("states/before_rollback/bundle.json"), read("states/after_rollback/bundle.json"), ids)
+    restored = read("rollback/current.json")
+    assert_rows(restored, "H1")
+    require(restored == read("history/id_H1.json"), "saved restored current differs from H1")
+    for name, label in (("h0", "H0"), ("h1", "H1"), ("after_fault", "H1"), ("final_h1", "H1")):
+        assert_rows(read(f"source/{name}.json"), label)
+    for name in ("batch_1", "batch_2", "final_build"):
+        results = read(f"source/{name}/target/run_results.json")["results"]
+        models = [r for r in results if r["unique_id"].startswith("model.")]
+        require(len(models) == 15 and {r["unique_id"] for r in models if r["status"] == "success"} == MODEL_IDS, "saved dbt model coverage failed")
+        require(all(r["status"] in {"pass", "success"} for r in results), "saved dbt failure/skip")
+        if name != "batch_1":
+            tests = [r for r in results if r["unique_id"].startswith("test.")]
+            require(len(tests) == 113 and len({r["unique_id"] for r in tests}) == 113, "saved baseline test coverage failed")
+
+
 class TimeTravelWorkflow(TimeTravelAcceptanceRun):
     """TT-only evidence/cleanup orchestration; never inherit blanket-PASS finalize."""
+
+    def __init__(self, run_id: str, evidence_dir: Path) -> None:
+        super().__init__(run_id, evidence_dir)
+        self.created_schemas: set[str] = set()
+
+    def create_schema(self, schema: str, name: str) -> None:
+        require(self.allowlist_verified, "schema creation requires verified ownership")
+        location = f"s3://{BUCKET}/warehouse/{schema}/"
+        self.allowlist.require_location(schema, location)
+        self.sql(name, f"CREATE SCHEMA {CATALOG}.{schema} WITH (location = '{location}')")
+        # Only successful creation establishes ownership. A concurrent collision
+        # must never turn into authority to delete an unclaimed schema.
+        self.created_schemas.add(schema)
+
+    def implementation(self) -> dict[str, str]:
+        return {name: hashlib.sha256((ROOT / name).read_bytes()).hexdigest() for name in ("scripts/run_time_travel_acceptance.py", "scripts/tests/test_time_travel_acceptance.py")}
+
+    def write_evidence_manifest(self) -> None:
+        entries = []
+        for path in sorted(self.evidence_dir.rglob("*")):
+            relative = str(path.relative_to(self.evidence_dir))
+            if not path.is_file() or relative in {"acceptance_summary.json", "evidence_manifest.json"}:
+                continue
+            data = path.read_bytes()
+            entries.append({"path": relative, "size": len(data), "sha256": hashlib.sha256(data).hexdigest()})
+        self.write_json("evidence_manifest.json", {"files": entries})
 
     @property
     def schema(self) -> str:
@@ -599,17 +698,15 @@ class TimeTravelWorkflow(TimeTravelAcceptanceRun):
         results = json.loads((self.evidence_dir / base / "target/run_results.json").read_text())["results"]
         models = [row for row in results if row["unique_id"].startswith("model.")]
         tests = [row for row in results if row["unique_id"].startswith("test.")]
-        require(len(models) == 15 and all(row["status"] == "success" for row in models), "source build did not execute all 15 models")
+        require(len(models) == 15 and {row["unique_id"] for row in models} == MODEL_IDS and all(row["status"] == "success" for row in models), "source build did not execute all 15 models")
         require(all(row["status"] in {"success", "pass"} for row in results), "source build contains failures/skips")
         if full:
-            require(bool(tests) and all(row["status"] == "pass" for row in tests), "baseline tests not selected/passing")
+            require(len(tests) == 113 and len({row["unique_id"] for row in tests}) == 113 and all(row["status"] == "pass" for row in tests), "baseline tests not selected/passing")
 
     def stage_h0(self) -> None:
         require(self.allowlist_verified, "source writes require verified allowlist")
         for schema in self.allowlist.schemas:
-            location = f"s3://{BUCKET}/warehouse/{schema}/"
-            self.allowlist.require_location(schema, location)
-            self.sql(f"source/create/{schema}", f"CREATE SCHEMA {CATALOG}.{schema} WITH (location = '{location}')")
+            self.create_schema(schema, f"source/create/{schema}")
         self.load_fixtures(self.source_prefix, "baseline", "batch_1", "source/batch_1/load.log")
         self.build_source("batch_1", full=False)
         self.source_h0 = self.typed_rows("source/h0", self.source_table, source=True)
@@ -673,7 +770,8 @@ class TimeTravelWorkflow(TimeTravelAcceptanceRun):
         require(len(late) == 5 and [row[0] for row in late[1:]] == [f"P3-E0{n}" for n in range(5,9)], "missing/duplicate late event evidence")
         expected_times = [("2025-02-10T15:00", "2025-02-12T09:00"), ("2025-02-10T17:00", "2025-02-12T09:01"), ("2025-02-11T10:00", "2025-02-12T09:02"), ("2025-02-11T11:00", "2025-02-12T09:03")]
         for row, (event, received) in zip(late[1:], expected_times):
-            require(row[1].startswith(event) and row[2].startswith(received), "business/received time evidence mismatch")
+            for actual, expected in ((row[1], event), (row[2], received)):
+                require(datetime.fromisoformat(actual.replace("Z", "+00:00")) == datetime.fromisoformat(expected + ":00+00:00"), "business/received time evidence mismatch")
         require(self.bundle("after_history") == before, "historical reads changed current/metadata/files")
         self.write_json("history/comparison.json", {"snapshot_ids": self.ids, "timestamp_cases": [{"case": n, "utc": sql_timestamp(ms), "expected": label} for n, ms, label in cases], "current_unchanged": True, "commit_time_is_not_event_time": True})
         self.ac_results["AC-029"] = "PASS"
@@ -725,11 +823,47 @@ class TimeTravelWorkflow(TimeTravelAcceptanceRun):
         self.write_json("rollback/comparison.json", {"restored_snapshot": self.ids[1], "historical_Hbad_readable": True, "three_data_snapshots": True, "historical_data_delete_checksums_unchanged": True})
         self.ac_results["AC-030"] = "PASS"
 
+    def stage_full_checks(self) -> None:
+        before = self.bundle("before_final_build")
+        self.build_source("final_build", full=True)
+        final_source = self.typed_rows("source/final_h1", self.source_table, source=True)
+        assert_rows(final_source, "H1")
+        require(final_source == self.source_h1, "final baseline changed source H1")
+        after = self.bundle("after_final_build")
+        require({key: value for key, value in before.items() if key != "task_objects"} == {key: value for key, value in after.items() if key != "task_objects"}, "source rebuild replaced educational table/history")
+        self.write_json("source/comparison.json", {"real_staged_H0_H1": True, "source_valid_during_fault": True, "final_baseline_build": "PASS", "educational_history_survived_source_rebuild": True})
+        names = ", ".join(f"'{schema}'" for schema in self.allowlist.schemas)
+        tables = self.query_csv("runtime/catalog_tables.csv", f"SELECT table_schema, table_name FROM {CATALOG}.information_schema.tables WHERE table_schema IN ({names}) ORDER BY table_schema, table_name")
+        expected = {(f"{self.source_prefix}_fixtures", name) for name in ("hubs", "packages", "route_plan_changes", "route_checkpoints", "tracking_events")}
+        for layer in ("bronze", "silver", "gold"):
+            expected |= {(f"{self.source_prefix}_{layer}", path.stem) for path in (ROOT / "dbt/models" / layer).glob("*.sql")}
+        expected.add((self.schema, "time_travel_package_delivery"))
+        require({tuple(row) for row in tables[1:]} == expected and len(tables) == len(expected) + 1, "unexpected catalog registrations")
+        rest = self.rest(f"{CATALOG}/namespaces/{self.schema}/tables")
+        require(rest.get("identifiers") == [{"namespace": [self.schema], "name": "time_travel_package_delivery"}], "Polaris registration mismatch")
+        self.write_json("runtime/polaris_tables.json", rest)
+        objects = after["objects"]
+        require(any(key.endswith(".parquet") for key in objects) and any(key.endswith(".avro") for key in objects) and any(key.endswith(".metadata.json") for key in objects), "missing Iceberg data/metadata/manifests")
+        header = after["files"][0]
+        require({"file_path", "file_size_in_bytes"} <= set(header), "missing current file metadata")
+        for row in after["files"][1:]:
+            entry = dict(zip(header, row))
+            key = entry["file_path"].removeprefix(f"s3://{BUCKET}/")
+            self.allowlist.require_object(key)
+            require(key in objects and objects[key]["size"] == int(entry["file_size_in_bytes"]), "file metadata/storage mismatch")
+        require(len(after["files"]) > 1, "empty current file inventory")
+        self.write_json("runtime/end_to_end.json", {"table_count": len(expected), "task_object_count": len(objects), "polaris_registered": True, "data_metadata_manifests_present": True, "current_files_bound_to_storage": True})
+        self.ac_results["AC-032"] = "PASS"
+
+    def workflow(self) -> None:
+        for stage in (self.stage_h0, self.stage_states, self.stage_history,
+                      self.stage_negative, self.stage_rollback, self.stage_full_checks):
+            print(f"TT-1: {stage.__name__}", flush=True)
+            stage()
+
     def probe(self) -> None:
         started = time.monotonic()
-        location = f"s3://{BUCKET}/warehouse/{self.schema}/"
-        self.allowlist.require_location(self.schema, location)
-        self.sql("probe/create_schema", f"CREATE SCHEMA {CATALOG}.{self.schema} WITH (location = '{location}')")
+        self.create_schema(self.schema, "probe/create_schema")
         self.sql("probe/h0", f"CREATE TABLE {self.table} WITH (format='PARQUET', format_version=2) AS SELECT 'P3' AS package_id, DOUBLE '36' AS delivery_duration_hours")
         self.sql("probe/h1", f"UPDATE {self.table} SET delivery_duration_hours=40 WHERE package_id='P3'")
         self.sql("probe/hbad", f"UPDATE {self.table} SET delivery_duration_hours=360 WHERE package_id='P3'")
@@ -770,7 +904,7 @@ class TimeTravelWorkflow(TimeTravelAcceptanceRun):
         return self.rest(f"{CATALOG}/namespaces/{urllib.parse.quote(schema, safe='')}/tables/{urllib.parse.quote(table, safe='')}")
 
     def immutable(self) -> dict[str, str]:
-        files = self.capture(["git", "ls-files", "dbt", "docker", "infra", "compose.yaml"], None).stdout.splitlines()
+        files = self.capture(["git", "ls-files", "dbt", "docker", "infra", "compose.yaml", "docs/spec.md", "scripts/run_acceptance.py", "scripts/run_schema_evolution_acceptance.py", "scripts/run_partitioning_file_pruning_acceptance.py", "scripts/tests/test_partitioning_file_pruning_acceptance.py"], None).stdout.splitlines()
         require(bool(files), "empty protected file set")
         return {name: hashlib.sha256((ROOT / name).read_bytes()).hexdigest() for name in files}
 
@@ -804,12 +938,12 @@ class TimeTravelWorkflow(TimeTravelAcceptanceRun):
             self.allowlist.require_object(key)
         return result
 
-    def checksums(self, schema: str, objects: dict[str, Any]) -> dict[str, str]:
+    def checksums(self, schema: str, objects: dict[str, Any], *, label: str) -> dict[str, str]:
         self.allowlist.require_schema(schema)
         require(bool(objects), "no objects to checksum")
         prefix = f"warehouse/{schema}/"
         # Fixed script, URI passed as positional argument; no key is interpolated in shell code.
-        result = self.capture(["docker", "compose", "run", "--rm", "--no-deps", "--entrypoint", "sh", "bucket-setup", "-c", 'set -eu; aws s3 cp --recursive "$1" /tmp/ttobjects/ >/dev/null; find /tmp/ttobjects -type f -exec sha256sum {} +', "sh", f"s3://{BUCKET}/{prefix}"], None)
+        result = self.capture(["docker", "compose", "run", "--rm", "--no-deps", "--entrypoint", "sh", "bucket-setup", "-c", 'set -eu; aws s3 cp --recursive "$1" /tmp/ttobjects/ >/dev/null; find /tmp/ttobjects -type f -exec sha256sum {} +', "sh", f"s3://{BUCKET}/{prefix}"], f"{label}/sha256.txt")
         hashes = {}
         for line in result.stdout.splitlines():
             digest, path = line.split(maxsplit=1)
@@ -839,7 +973,7 @@ class TimeTravelWorkflow(TimeTravelAcceptanceRun):
             "snapshots": self.query_csv(f"{base}/snapshots.csv", f'SELECT * FROM "{CATALOG}"."{self.schema}"."time_travel_package_delivery$snapshots" ORDER BY committed_at'),
             "history": self.query_csv(f"{base}/history.csv", f'SELECT * FROM "{CATALOG}"."{self.schema}"."time_travel_package_delivery$history" ORDER BY made_current_at'),
             "files": self.query_csv(f"{base}/files.csv", f'SELECT * FROM "{CATALOG}"."{self.schema}"."time_travel_package_delivery$files" ORDER BY file_path'),
-            "objects": objects, "sha256": self.checksums(self.schema, objects),
+            "objects": objects, "sha256": self.checksums(self.schema, objects, label=base),
             "task_objects": self.task_objects(),
         }
         self.write_json(f"{base}/bundle.json", state)
@@ -851,11 +985,13 @@ class TimeTravelWorkflow(TimeTravelAcceptanceRun):
             self.allowlist.require_schema(schema)
             existing = self.query_csv(f"cleanup/{schema}/exists.csv", f"SELECT schema_name FROM {CATALOG}.information_schema.schemata WHERE schema_name = '{schema}'")
             if len(existing) > 1:
+                require(schema in self.created_schemas, "refusing cleanup of an unclaimed schema")
                 ddl = self.query_csv(f"cleanup/{schema}/location.csv", f'SHOW CREATE SCHEMA "{CATALOG}"."{schema}"')
                 location = re.escape(f"s3://{BUCKET}/warehouse/{schema}")
                 require(len(ddl) == 2 and re.search(r"location\s*=\s*'" + location + r"/?'", ddl[1][0]) is not None, "schema location ownership drift")
                 self.sql(f"cleanup/{schema}/drop", f'DROP SCHEMA "{CATALOG}"."{schema}" CASCADE')
             remaining = self.objects(schema)
+            require(not remaining or schema in self.created_schemas, "refusing cleanup of unclaimed objects")
             keys = list(remaining)
             for start in range(0, len(keys), 500):
                 batch = keys[start:start + 500]
@@ -879,9 +1015,12 @@ class TimeTravelWorkflow(TimeTravelAcceptanceRun):
         errors = []
         before = None
         protected = None
+        implementation = None
         restored = False
         try:
             self.preflight()
+            implementation = self.implementation()
+            self.write_json("preflight/implementation.json", implementation)
             self.start_stack()
             self.assert_allowlist_absent()
             protected = self.immutable()
@@ -918,11 +1057,13 @@ class TimeTravelWorkflow(TimeTravelAcceptanceRun):
         try:
             require(not errors, "; ".join(errors))
             require(self.data_cleaned and restored, "cleanup/restoration gate failed")
+            require(implementation == self.implementation(), "implementation changed during acceptance")
             self.assert_no_secrets_in_evidence()
-            required = {"preflight/task_allowlist.json", "cleanup/data.json", "cleanup/environment.json", "runtime/isolation.json", "commands.jsonl", "secret_scan.json"}
+            required = {"preflight/task_allowlist.json", "preflight/implementation.json", "cleanup/data.json", "cleanup/environment.json", "runtime/isolation.json", "commands.jsonl", "secret_scan.json"}
             if complete:
                 require(all(self.ac_results[f"AC-{n:03}"] == "PASS" for n in range(28, 33)), "mandatory AC still pending")
-                required |= {"history/comparison.json", "negative/comparison.json", "rollback/comparison.json", "source/comparison.json", "runtime/end_to_end.json"}
+                required |= full_evidence_paths()
+                verify_saved_behavior(self.evidence_dir)
             self.write_evidence_manifest()
             verify_manifest(self.evidence_dir, required)
             if complete:
@@ -938,20 +1079,25 @@ class TimeTravelWorkflow(TimeTravelAcceptanceRun):
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run-id", required=True)
-    parser.add_argument(
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument(
         "--check-environment", action="store_true",
         help="only verify lifecycle/allowlist, not TT-1 acceptance; may start a fresh project",
     )
+    modes.add_argument("--probe", action="store_true", help="run the bounded three-snapshot compatibility experiment only")
     args = parser.parse_args()
-    if not args.check_environment:
-        parser.error("full TT acceptance is not implemented; only --check-environment is available")
     try:
-        runner = TimeTravelAcceptanceRun(args.run_id, DEFAULT_EVIDENCE_ROOT / args.run_id)
-        runner.run()
+        if args.check_environment:
+            runner = TimeTravelAcceptanceRun(args.run_id, DEFAULT_EVIDENCE_ROOT / args.run_id)
+            runner.run()
+            print("TT environment checkpoint ready; AC-028–AC-033 remain NOT_RUN")
+        else:
+            runner = TimeTravelWorkflow(args.run_id, DEFAULT_EVIDENCE_ROOT / args.run_id)
+            runner.run_slice(runner.probe if args.probe else runner.workflow, complete=not args.probe)
+            print("TT compatibility CHECKPOINT" if args.probe else "TT-1 acceptance PASS: AC-028–AC-033")
     except (AcceptanceError, OSError) as error:
-        print(f"TT environment checkpoint failed: {error}", file=sys.stderr)
+        print(f"TT acceptance failed: {error}", file=sys.stderr)
         return 1
-    print("TT environment checkpoint ready; AC-028–AC-033 remain NOT_RUN")
     return 0
 
 
