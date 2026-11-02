@@ -447,6 +447,39 @@ def verify_manifest(root: Path, required: set[str]) -> None:
         require(entry["size"] == len(data) and entry["sha256"] == hashlib.sha256(data).hexdigest(), "evidence checksum mismatch")
 
 
+def snapshot_chain(metadata: dict[str, Any], count: int) -> list[int]:
+    snapshots = metadata.get("snapshots", [])
+    require(len(snapshots) == count, "unexpected data snapshot count")
+    history = metadata.get("snapshot-log", [])
+    require(len(history) == count, "unexpected linear snapshot history")
+    ids = [entry["snapshot-id"] for entry in history]
+    require(len(set(ids)) == count and set(ids) == {s["snapshot-id"] for s in snapshots}, "invalid snapshot IDs/history")
+    by_id = {entry["snapshot-id"]: entry for entry in snapshots}
+    for index, sid in enumerate(ids):
+        require(type(sid) is int and 0 < sid < 2**63, "invalid snapshot ID")
+        require(by_id[sid].get("parent-snapshot-id") == (ids[index - 1] if index else None), "snapshot parent mismatch")
+        require(by_id[sid]["timestamp-ms"] == history[index]["timestamp-ms"], "commit/history timestamp mismatch")
+        if index:
+            require(history[index]["timestamp-ms"] - history[index - 1]["timestamp-ms"] >= 2, "timestamp boundaries cannot distinguish commits")
+    require(metadata.get("current-snapshot-id") == ids[-1], "current snapshot does not end linear history")
+    return ids
+
+
+def assert_rollback(before: dict[str, Any], after: dict[str, Any], ids: list[int]) -> None:
+    first, restored, bad = ids
+    old, new = before["metadata"], after["metadata"]
+    require(new.get("current-snapshot-id") == restored and old.get("current-snapshot-id") == bad, "rollback current mismatch")
+    for key in ("table-uuid", "current-schema-id", "schemas", "snapshots", "partition-specs", "default-spec-id"):
+        require(old.get(key) == new.get(key), f"rollback changed {key}")
+    history = new.get("snapshot-log", [])
+    require([entry["snapshot-id"] for entry in history] == [first, restored, bad, restored], "rollback history mismatch")
+    require(history[:3] == old["snapshot-log"] and history[-1]["timestamp-ms"] > history[-2]["timestamp-ms"], "rollback rewrote history")
+    old_data = {key: (before["objects"][key]["size"], digest) for key, digest in before["sha256"].items() if "/data/" in key}
+    new_data = {key: (after["objects"][key]["size"], digest) for key, digest in after["sha256"].items() if "/data/" in key}
+    require(bool(old_data) and old_data == new_data, "rollback changed historical data/delete files")
+    require(before["metadata_location"] != after["metadata_location"], "rollback did not update catalog pointer")
+
+
 class TimeTravelWorkflow(TimeTravelAcceptanceRun):
     """TT-only evidence/cleanup orchestration; never inherit blanket-PASS finalize."""
 
@@ -461,6 +494,27 @@ class TimeTravelWorkflow(TimeTravelAcceptanceRun):
     @property
     def source_prefix(self) -> str:
         return f"{self.run_id}_source"
+
+    def probe(self) -> None:
+        started = time.monotonic()
+        location = f"s3://{BUCKET}/warehouse/{self.schema}/"
+        self.allowlist.require_location(self.schema, location)
+        self.sql("probe/create_schema", f"CREATE SCHEMA {CATALOG}.{self.schema} WITH (location = '{location}')")
+        self.sql("probe/h0", f"CREATE TABLE {self.table} WITH (format='PARQUET', format_version=2) AS SELECT 'P3' AS package_id, DOUBLE '36' AS delivery_duration_hours")
+        self.sql("probe/h1", f"UPDATE {self.table} SET delivery_duration_hours=40 WHERE package_id='P3'")
+        self.sql("probe/hbad", f"UPDATE {self.table} SET delivery_duration_hours=360 WHERE package_id='P3'")
+        before = self.bundle("probe_before")
+        ids = snapshot_chain(before["metadata"], 3)
+        self.sql("probe/rollback", f"ALTER TABLE {self.table} EXECUTE rollback_to_snapshot({ids[1]})")
+        after = self.bundle("probe_after")
+        assert_rollback(before, after, ids)
+        for label, sid, duration in zip(("h0", "h1", "hbad"), ids, (36, 40, 360)):
+            rows = self.query_csv(f"probe/{label}.csv", f"SELECT package_id, delivery_duration_hours FROM {self.table} FOR VERSION AS OF {sid}")
+            require(len(rows) == 2 and rows[1][0] == "P3" and float(rows[1][1]) == duration, "probe historical rows mismatch")
+        require(len(after["rows"]) == 2 and float(after["rows"][1][1]) == 40, "probe restored rows mismatch")
+        elapsed = time.monotonic() - started
+        require(elapsed <= 120, "probe exceeded 120-second runtime budget")
+        self.write_json("probe/comparison.json", {"snapshot_ids": ids, "rollback_verified": True, "duration_seconds": elapsed})
 
     def sql(self, name: str, sql: str) -> None:
         self.write_text(f"{name}.sql", sql.strip() + "\n")

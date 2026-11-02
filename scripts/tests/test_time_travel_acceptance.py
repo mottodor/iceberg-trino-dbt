@@ -525,5 +525,46 @@ class EvidenceTests(unittest.TestCase):
             self.assertEqual(summary["ac_results"]["AC-033"], "NOT_RUN")
 
 
+class SnapshotInvariantTests(unittest.TestCase):
+    def metadata(self):
+        return {"table-uuid": "same-table", "current-schema-id": 0, "schemas": [{"schema-id": 0}], "current-snapshot-id": 70,
+                "snapshots": [{"snapshot-id": 90, "timestamp-ms": 100}, {"snapshot-id": 20, "parent-snapshot-id": 90, "timestamp-ms": 110}, {"snapshot-id": 70, "parent-snapshot-id": 20, "timestamp-ms": 120}],
+                "snapshot-log": [{"snapshot-id": 90, "timestamp-ms": 100}, {"snapshot-id": 20, "timestamp-ms": 110}, {"snapshot-id": 70, "timestamp-ms": 120}]}
+
+    def states(self):
+        before = {"metadata": self.metadata(), "metadata_location": "old.json", "objects": {"warehouse/table/data/delete.parquet": {"size": 9}}, "sha256": {"warehouse/table/data/delete.parquet": "content-hash"}}
+        after = copy.deepcopy(before)
+        after["metadata_location"] = "new.json"
+        after["metadata"]["current-snapshot-id"] = 20
+        after["metadata"]["snapshot-log"].append({"snapshot-id": 20, "timestamp-ms": 130})
+        return before, after
+
+    def test_chain_uses_history_not_numeric_snapshot_order(self):
+        self.assertEqual(target.snapshot_chain(self.metadata(), 3), [90, 20, 70])
+        for field, value in [("current-snapshot-id", 90), ("snapshot-log", []), ("snapshots", [])]:
+            state = self.metadata()
+            state[field] = value
+            with self.subTest(field=field), self.assertRaises(target.AcceptanceError):
+                target.snapshot_chain(state, 3)
+        state = self.metadata()
+        state["snapshots"][1]["parent-snapshot-id"] = 70
+        with self.assertRaises(target.AcceptanceError):
+            target.snapshot_chain(state, 3)
+
+    def test_rollback_rejects_file_schema_history_and_pointer_mutations(self):
+        before, after = self.states()
+        target.assert_rollback(before, after, [90, 20, 70])
+        mutations = []
+        for key, value in [("current-snapshot-id", 70), ("current-schema-id", 1), ("table-uuid", "replacement"), ("snapshots", []), ("snapshot-log", [])]:
+            changed = copy.deepcopy(after)
+            changed["metadata"][key] = value
+            mutations.append(changed)
+        for key, value in [("sha256", {}), ("sha256", {"warehouse/table/data/delete.parquet": "changed-content"}), ("metadata_location", "old.json")]:
+            mutations.append({**after, key: value})
+        for changed in mutations:
+            with self.subTest(changed=changed), self.assertRaises(target.AcceptanceError):
+                target.assert_rollback(before, changed, [90, 20, 70])
+
+
 if __name__ == "__main__":
     unittest.main()

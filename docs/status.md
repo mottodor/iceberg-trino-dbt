@@ -1952,3 +1952,23 @@ Unit discovery: 88/88 PASS. Live tt_env002_live2: CHECKPOINT, AC-028 PASS, remai
 
 ### Next action
 Commit this completed stage, then continue the next dependency in the approved TT plan.
+
+## TASK_ID: TT-PROBE-001
+
+- Source: [Time travel bootstrap](bootstrap-time-travel.md) §5–6; [spec](spec.md) §12.
+- Status: DONE
+- Updated: 2026-11-02T15:34:31+03:00
+- Baseline HEAD: 39f806ccf32e84863bb8eea15e691fe994e521d5
+
+### Progress
+- Implemented: Implemented and executed bounded single-table compatibility probe: three parent-linked snapshots, rollback to the second, preserved historical reads and unchanged data/delete file SHA-256 identities.
+- Remaining: none within this stage; final AC-028–AC-033 acceptance is recorded separately under TT-IMP-006.
+
+### AC evidence
+Unit discovery 90/90 PASS, including mutation tests for snapshots, parents, schema/table identity, history, content hashes and catalog pointer. Live tt_probe001_live: CHECKPOINT; probe/comparison.json records 37.858 seconds within the 120-second budget. Exact task schemas/objects removed; environment restored; volumes preserved. This probe does not close the staged P1–P4 AC.
+
+### Review
+- Codex direct source/diff verification and recorded tests; no pi reviewer invocation is claimed. User authorized sequential execution and commits on 2026-11-02.
+
+### Next action
+Commit this completed stage, then continue the next dependency in the approved TT plan.
