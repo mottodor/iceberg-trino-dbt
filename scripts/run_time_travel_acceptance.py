@@ -522,6 +522,18 @@ def assert_rollback(before: dict[str, Any], after: dict[str, Any], ids: list[int
     require(before["metadata_location"] != after["metadata_location"], "rollback did not update catalog pointer")
 
 
+def timestamp_cases(metadata: dict[str, Any]) -> list[tuple[str, int, str]]:
+    snapshot_chain(metadata, 3)
+    t0, t1, tb = [entry["timestamp-ms"] for entry in metadata["snapshot-log"]]
+    return [("at_t0", t0, "H0"), ("between_t0_t1", t0 + 1, "H0"),
+            ("at_t1", t1, "H1"), ("between_t1_tb", t1 + 1, "H1"), ("at_tb", tb, "Hbad")]
+
+
+def sql_timestamp(milliseconds: int) -> str:
+    value = datetime.fromtimestamp(milliseconds // 1000, timezone.utc)
+    return "TIMESTAMP '" + value.strftime("%Y-%m-%d %H:%M:%S.") + f"{milliseconds % 1000:03d} UTC'"
+
+
 class TimeTravelWorkflow(TimeTravelAcceptanceRun):
     """TT-only evidence/cleanup orchestration; never inherit blanket-PASS finalize."""
 
@@ -621,6 +633,31 @@ class TimeTravelWorkflow(TimeTravelAcceptanceRun):
         for key in ("table-uuid", "schemas", "current-schema-id", "partition-specs"):
             require(self.h0["metadata"].get(key) == self.h1["metadata"].get(key) == self.hbad["metadata"].get(key), "table identity/schema changed between states")
         self.write_json("states/comparison.json", {"snapshot_ids": self.ids, "single_table": True, "H1_source_valid": True, "only_fault": "P3 duration 36 -> 360"})
+
+    def stage_history(self) -> None:
+        before = self.bundle("before_history")
+        require(before == self.hbad, "current changed before historical reads")
+        for label, sid in zip(("H0", "H1", "Hbad"), self.ids):
+            rows = self.typed_rows(f"history/id_{label}", f"{self.table} FOR VERSION AS OF {sid}")
+            assert_rows(rows, label)
+            # Compare each snapshot against its actual originally captured current rows.
+            original = {"H0": self.source_h0, "H1": self.source_h1, "Hbad": self.actual_hbad}[label]
+            require(rows == original, "historical/current exact comparison failed")
+        cases = timestamp_cases(before["metadata"])
+        for name, millis, label in cases:
+            rows = self.typed_rows(f"history/time_{name}", f"{self.table} FOR TIMESTAMP AS OF {sql_timestamp(millis)}")
+            assert_rows(rows, label)
+            sid = self.ids[("H0", "H1", "Hbad").index(label)]
+            exact = json.loads((self.evidence_dir / f"history/id_{label}.json").read_text())
+            require(rows == exact, "timestamp and snapshot-ID reads differ")
+        late = self.query_csv("history/late_events.csv", f"SELECT event_id, to_iso8601(event_at), to_iso8601(received_at) FROM {CATALOG}.{self.source_prefix}_silver.silver_tracking_events_typed WHERE event_id IN ('P3-E05','P3-E06','P3-E07','P3-E08') ORDER BY event_id")
+        require(len(late) == 5 and [row[0] for row in late[1:]] == [f"P3-E0{n}" for n in range(5,9)], "missing/duplicate late event evidence")
+        expected_times = [("2025-02-10T15:00", "2025-02-12T09:00"), ("2025-02-10T17:00", "2025-02-12T09:01"), ("2025-02-11T10:00", "2025-02-12T09:02"), ("2025-02-11T11:00", "2025-02-12T09:03")]
+        for row, (event, received) in zip(late[1:], expected_times):
+            require(row[1].startswith(event) and row[2].startswith(received), "business/received time evidence mismatch")
+        require(self.bundle("after_history") == before, "historical reads changed current/metadata/files")
+        self.write_json("history/comparison.json", {"snapshot_ids": self.ids, "timestamp_cases": [{"case": n, "utc": sql_timestamp(ms), "expected": label} for n, ms, label in cases], "current_unchanged": True, "commit_time_is_not_event_time": True})
+        self.ac_results["AC-029"] = "PASS"
 
     def probe(self) -> None:
         started = time.monotonic()

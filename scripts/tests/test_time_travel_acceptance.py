@@ -605,5 +605,22 @@ class TypedOracleTests(unittest.TestCase):
             target.assert_rows(rows, "H1")
 
 
+class TimestampTests(unittest.TestCase):
+    def test_boundaries_preserve_milliseconds_and_choose_previous_state(self):
+        metadata = SnapshotInvariantTests().metadata()
+        cases = target.timestamp_cases(metadata)
+        self.assertEqual(cases, [("at_t0", 100, "H0"), ("between_t0_t1", 101, "H0"), ("at_t1", 110, "H1"), ("between_t1_tb", 111, "H1"), ("at_tb", 120, "Hbad")])
+        self.assertEqual(target.sql_timestamp(1762086899999), "TIMESTAMP '2025-11-02 12:34:59.999 UTC'")
+        self.assertNotEqual(target.sql_timestamp(1000), target.sql_timestamp(1001))
+
+    def test_ambiguous_or_mismatched_commit_times_are_rejected(self):
+        for history_ms, snapshot_ms in [(100, 100), (101, 101), (110, 111)]:
+            metadata = SnapshotInvariantTests().metadata()
+            metadata["snapshot-log"][1]["timestamp-ms"] = history_ms
+            metadata["snapshots"][1]["timestamp-ms"] = snapshot_ms
+            with self.subTest(history_ms=history_ms, snapshot_ms=snapshot_ms), self.assertRaises(target.AcceptanceError):
+                target.timestamp_cases(metadata)
+
+
 if __name__ == "__main__":
     unittest.main()

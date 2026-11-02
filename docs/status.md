@@ -2012,3 +2012,23 @@ Unit discovery 95/95 PASS, including rejection of swapped H0/H1/Hbad oracles and
 
 ### Next action
 Commit this completed stage, then continue the next dependency in the approved TT plan.
+
+## TASK_ID: TT-IMP-003
+
+- Source: [Time travel bootstrap](bootstrap-time-travel.md) §5–6; [spec](spec.md) §12.
+- Status: DONE
+- Updated: 2026-11-02T15:43:24+03:00
+- Baseline HEAD: 52fa272001b12bfaf631c4fd3f2b3d79cb9f8fbf
+
+### Progress
+- Implemented: Implemented three snapshot-ID reads, five UTC timestamp boundary reads with preserved milliseconds, late P3 event_at/received_at evidence, exact historical/current comparisons and full table/catalog/object invariance around reads.
+- Remaining: none within this stage; final AC-028–AC-033 acceptance is recorded separately under TT-IMP-006.
+
+### AC evidence
+Unit discovery 97/97 PASS, including ambiguous/insufficiently separated times and commit/history mismatch rejection. Live tt_staged_dev002 history/comparison.json records all eight successful reads; timestamp queries at each commit and one interior millisecond return H0/H1/Hbad as specified. Before/after bundles including all five task object inventories are identical; AC-029 PASS.
+
+### Review
+- Codex direct source/diff verification and recorded tests; no pi reviewer invocation is claimed. User authorized sequential execution and commits on 2026-11-02.
+
+### Next action
+Commit this completed stage, then continue the next dependency in the approved TT plan.
