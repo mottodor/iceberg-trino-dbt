@@ -702,6 +702,29 @@ class TimeTravelWorkflow(TimeTravelAcceptanceRun):
         self.write_json("negative/comparison.json", {"cases": results, "missing_positive_bigint": missing, "early_timestamp": sql_timestamp(early), "all_atomic": True})
         self.ac_results["AC-031"] = "PASS"
 
+    def stage_rollback(self) -> None:
+        before = self.bundle("before_rollback")
+        require(before == self.hbad, "rollback did not start from Hbad")
+        self.sql("rollback/execute", f"ALTER TABLE {self.table} EXECUTE rollback_to_snapshot({self.ids[1]})")
+        current = self.typed_rows("rollback/current", self.table)
+        assert_rows(current, "H1")
+        require(current == self.source_h1, "restored current differs from actual H1")
+        for label, sid in zip(("H0", "H1", "Hbad"), self.ids):
+            rows = self.typed_rows(f"rollback/id_{label}", f"{self.table} FOR VERSION AS OF {sid}")
+            assert_rows(rows, label)
+            original = {"H0": self.source_h0, "H1": self.source_h1, "Hbad": self.actual_hbad}[label]
+            require(rows == original, "rollback changed saved historical rows")
+        after = self.bundle("after_rollback")
+        assert_rollback(before, after, self.ids)
+        # Validate Trino's ancestry view independently of metadata JSON.
+        header = after["history"][0]
+        history = [dict(zip(header, row)) for row in after["history"][1:]]
+        require([int(row["snapshot_id"]) for row in history] == [*self.ids, self.ids[1]], "Trino history differs from metadata log")
+        require([row["is_current_ancestor"] for row in history] == ["true", "true", "false", "true"], "wrong current ancestor flags")
+        self.after_rollback = after
+        self.write_json("rollback/comparison.json", {"restored_snapshot": self.ids[1], "historical_Hbad_readable": True, "three_data_snapshots": True, "historical_data_delete_checksums_unchanged": True})
+        self.ac_results["AC-030"] = "PASS"
+
     def probe(self) -> None:
         started = time.monotonic()
         location = f"s3://{BUCKET}/warehouse/{self.schema}/"

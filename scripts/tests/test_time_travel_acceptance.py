@@ -561,6 +561,16 @@ class SnapshotInvariantTests(unittest.TestCase):
             mutations.append(changed)
         for key, value in [("sha256", {}), ("sha256", {"warehouse/table/data/delete.parquet": "changed-content"}), ("metadata_location", "old.json")]:
             mutations.append({**after, key: value})
+        resized = copy.deepcopy(after)
+        resized["objects"]["warehouse/table/data/delete.parquet"]["size"] = 10
+        mutations.append(resized)
+        new_delete = copy.deepcopy(after)
+        new_delete["objects"]["warehouse/table/data/new-delete.parquet"] = {"size": 3}
+        new_delete["sha256"]["warehouse/table/data/new-delete.parquet"] = "new-content"
+        mutations.append(new_delete)
+        wrong_time = copy.deepcopy(after)
+        wrong_time["metadata"]["snapshot-log"][-1]["timestamp-ms"] = 100
+        mutations.append(wrong_time)
         for changed in mutations:
             with self.subTest(changed=changed), self.assertRaises(target.AcceptanceError):
                 target.assert_rollback(before, changed, [90, 20, 70])

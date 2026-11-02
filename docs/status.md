@@ -2052,3 +2052,23 @@ Unit discovery 100/100 PASS; negative tests reject successful operations, wrong 
 
 ### Next action
 Commit this completed stage, then continue the next dependency in the approved TT plan.
+
+## TASK_ID: TT-IMP-005
+
+- Source: [Time travel bootstrap](bootstrap-time-travel.md) §5–6; [spec](spec.md) §12.
+- Status: DONE
+- Updated: 2026-11-02T15:48:13+03:00
+- Baseline HEAD: 2b921b634f8a621f33e5f27cf98981746bec63a9
+
+### Progress
+- Implemented: Implemented rollback to actual H1, exact restored-current comparison, all three historical reads after rollback, metadata/history and ancestry assertions, preserved schema/table identity and full historical data/delete file path/size/SHA-256 invariants.
+- Remaining: none within this stage; final AC-028–AC-033 acceptance is recorded separately under TT-IMP-006.
+
+### AC evidence
+Unit discovery 100/100 PASS; rollback mutations include resized/new delete files, changed content/schema/history/pointers and invalid rollback times. Live tt_staged_dev002 reached STAGE_PASS stage_rollback: current P3 duration=36, visits/dwell/ratio=2/3/1.5, Hbad readable; exactly three data snapshots and H0 -> H1 -> Hbad -> H1 history. rollback/comparison.json and before/after bundles retained; AC-030 PASS.
+
+### Review
+- Codex direct source/diff verification and recorded tests; no pi reviewer invocation is claimed. User authorized sequential execution and commits on 2026-11-02.
+
+### Next action
+Commit this completed stage, then continue the next dependency in the approved TT plan.
